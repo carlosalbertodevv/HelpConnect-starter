@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HelpConnect — Painel</title><link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="top"><div class="brand"><span class="logo">H</span><div><strong>HelpConnect</strong><small>Central de suporte remoto Android</small></div></div><button id="logout" class="ghost hidden">Sair</button></header>
+    <section id="login" class="panel auth">
+      <h1>Acessar painel</h1><p>Entre com sua conta de atendente.</p>
+      <label>E-mail<input id="email" type="email" autocomplete="username"></label>
+      <label>Senha<input id="password" type="password" autocomplete="current-password"></label>
+      <button id="loginBtn">Entrar</button><p id="loginMessage" class="message"></p>
+      <small>Configure as credenciais públicas do Supabase em <code>app.js</code>.</small>
+    </section>
+    <section id="dashboard" class="hidden">
+      <div class="heading"><div><h1>Atendimentos</h1><p>Crie links temporários para iniciar um suporte autorizado.</p></div><button id="newSession">+ Novo atendimento</button></div>
+      <div id="newSessionPanel" class="panel hidden">
+        <h2>Novo atendimento</h2><label>Nome do cliente (opcional)<input id="clientName" maxlength="100" placeholder="Ex.: João"></label>
+        <button id="createSession">Gerar link</button><div id="generatedLink" class="generated hidden"></div>
+      </div>
+      <div class="panel"><div class="tableHead"><h2>Histórico recente</h2><button id="refresh" class="ghost">Atualizar</button></div><div id="sessions" class="sessions"><p>Carregando...</p></div></div>
+    </section>
+    <footer>HelpConnect · O acesso só começa após autorização explícita do cliente.</footer>
+  </main>
+  <script src="app.js"></script>
+</body></html>

@@ -1,0 +1,37 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RemoteSessionStatus {
+  PENDING
+  CONSENTED
+  CONNECTING
+  ACTIVE
+  ENDED
+  EXPIRED
+  REJECTED
+}
+
+model RemoteSession {
+  id              String              @id @default(uuid()) @db.Uuid
+  operatorId      String
+  clientName      String?
+  deviceModel     String?
+  androidVersion  String?
+  status          RemoteSessionStatus @default(PENDING)
+  accessTokenHash String              @unique
+  expiresAt       DateTime
+  consentedAt     DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([operatorId, createdAt])
+  @@index([status, expiresAt])
+}
