@@ -1,0 +1,23 @@
+<resources>
+    <string name="app_name">HelpConnect</string>
+    <string name="app_tagline">Atendimento remoto com sua autorização</string>
+    <string name="start_session_title">Iniciar atendimento</string>
+    <string name="session_input_help">Peça ao atendente o código e a credencial temporária. Transfira a credencial somente por um canal seguro; ela é de uso único e expira rapidamente.</string>
+    <string name="session_code_hint">Código da sessão</string>
+    <string name="session_code_placeholder">HC-XXXXXXXXXXXX</string>
+    <string name="device_ticket_hint">Credencial temporária</string>
+    <string name="device_ticket_placeholder">Cole o ticket de uso único</string>
+    <string name="validate_and_connect">Validar e conectar</string>
+    <string name="secure_connection">Conexão segura</string>
+    <string name="allow_screen_sharing">Autorizar compartilhamento de tela</string>
+    <string name="cancel_connection">Cancelar conexão</string>
+    <string name="screen_sharing_title">Compartilhamento de tela</string>
+    <string name="stop_screen_sharing">Interromper compartilhamento</string>
+    <string name="session_ended_title">Atendimento encerrado</string>
+    <string name="return_home">Voltar ao início</string>
+    <string name="session_code_format">Código: %1$s</string>
+    <string name="webrtc_state_format">Estado WebRTC: %1$s</string>
+    <string name="notification_channel_name">Compartilhamento de tela</string>
+    <string name="notification_title">Tela compartilhada com HelpConnect</string>
+    <string name="notification_stop">Interromper</string>
+</resources>

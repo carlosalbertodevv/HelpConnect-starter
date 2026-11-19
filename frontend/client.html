@@ -1,8 +1,8 @@
 <!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HelpConnect — Autorizar atendimento</title><link rel="stylesheet" href="styles.css"></head>
 <body><main class="shell narrow"><header class="top"><div class="brand"><span class="logo">H</span><div><strong>HelpConnect</strong><small>Suporte remoto Android</small></div></div></header>
-<section class="panel"><h1>Atendimento remoto</h1><p id="status">Verificando link...</p><div id="consentArea" class="hidden">
-<p>O atendente poderá receber a transmissão da tela do seu Android após você instalar/abrir o aplicativo e conceder as permissões do sistema. Você poderá interromper o compartilhamento a qualquer momento.</p>
+<section class="panel"><h1>Atendimento remoto</h1><p id="status" aria-live="polite">Verificando link...</p><div id="consentArea" class="hidden">
+<p>Ao autorizar, o atendente poderá orientar você durante este atendimento. Esta página registra apenas a sua decisão e o horário; não captura nem transmite sua tela. Qualquer compartilhamento futuro dependerá do aplicativo HelpConnect e das permissões oficiais do Android, e poderá ser interrompido por você.</p>
 <label class="check"><input type="checkbox" id="agree"> Li as informações e autorizo o início deste atendimento.</label>
-<button id="accept" disabled>Autorizar atendimento</button>
-</div><p id="result" class="message"></p></section><footer>Não compartilhe senhas, códigos de autenticação ou informações bancárias durante o atendimento.</footer></main><script src="client.js"></script></body></html>
+<div class="actions"><button id="accept" disabled>Autorizar atendimento</button><button id="decline" class="ghost" type="button">Recusar</button></div>
+</div><div id="revokeArea" class="hidden"><p>Você pode encerrar o atendimento a qualquer momento.</p><button id="revoke" class="ghost" type="button">Revogar consentimento e encerrar</button></div><p id="result" class="message" aria-live="polite"></p></section><footer>Não compartilhe senhas, códigos de autenticação ou informações bancárias durante o atendimento.</footer></main><script src="config.js"></script><script src="client.js"></script></body></html>

@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RemoteSessionStatus {
+  PENDING
+  CONSENTED
+  CONNECTING
+  ACTIVE
+  ENDED
+  EXPIRED
+  REJECTED
+}
+
+enum SessionPermissionType {
+  SUPPORT_SESSION
+  SCREEN_SHARING
+}
+
+model User {
+  id        String   @id @db.Uuid
+  email     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clients  Client[]
+  sessions RemoteSession[]
+}
+
+model Client {
+  id         String   @id @default(uuid()) @db.Uuid
+  operatorId String   @db.Uuid
+  name       String
+  email      String?
+  phone      String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  operator User     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  devices  Device[]
+  sessions RemoteSession[]
+
+  @@index([operatorId, isActive, name])
+}
+
+model Device {
+  id             String   @id @default(uuid()) @db.Uuid
+  clientId       String?  @db.Uuid
+  model          String?
+  androidVersion String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  client   Client?         @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  sessions RemoteSession[]
+
+  @@index([clientId, createdAt])
+}
+
+model RemoteSession {
+  id              String              @id @default(uuid()) @db.Uuid
+  operatorId      String              @db.Uuid
+  clientId        String?             @db.Uuid
+  deviceId        String?             @db.Uuid
+  publicCode      String              @unique
+  clientName      String?
+  deviceModel     String?
+  androidVersion  String?
+  status          RemoteSessionStatus @default(PENDING)
+  accessTokenHash String              @unique
+  expiresAt       DateTime
+  consentedAt     DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  operator    User                @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  client      Client?             @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  device      Device?             @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  permissions SessionPermission[]
+  logs        SessionLog[]
+
+  @@index([operatorId, createdAt])
+  @@index([status, expiresAt])
+  @@index([clientId, createdAt])
+}
+
+model SessionPermission {
+  id         String               @id @default(uuid()) @db.Uuid
+  sessionId  String               @db.Uuid
+  permission SessionPermissionType
+  granted    Boolean
+  grantedAt  DateTime?
+  createdAt  DateTime             @default(now())
+
+  session RemoteSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model SessionLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String   @db.Uuid
+  event     String
+  actorId   String?
+  createdAt DateTime @default(now())
+
+  session RemoteSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}

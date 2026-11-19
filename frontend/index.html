@@ -13,17 +13,45 @@
       <label>E-mail<input id="email" type="email" autocomplete="username"></label>
       <label>Senha<input id="password" type="password" autocomplete="current-password"></label>
       <button id="loginBtn">Entrar</button><p id="loginMessage" class="message"></p>
-      <small>Configure as credenciais públicas do Supabase em <code>app.js</code>.</small>
+      <small>Configure as credenciais públicas do Supabase em <code>config.js</code>.</small>
     </section>
     <section id="dashboard" class="hidden">
-      <div class="heading"><div><h1>Atendimentos</h1><p>Crie links temporários para iniciar um suporte autorizado.</p></div><button id="newSession">+ Novo atendimento</button></div>
+      <div class="heading"><div><h1>Central de suporte</h1><p>Gerencie seus clientes e acompanhe os atendimentos autorizados.</p></div></div>
+      <div class="metrics">
+        <article class="metric"><span>Atendimentos</span><strong id="metricTotal">0</strong></article>
+        <article class="metric"><span>Aguardando cliente</span><strong id="metricPending">0</strong></article>
+        <article class="metric"><span>Consentimento registrado</span><strong id="metricConsented">0</strong></article>
+        <article class="metric"><span>Clientes cadastrados</span><strong id="metricClients">0</strong></article>
+      </div>
+      <nav class="tabs" aria-label="Seções do painel">
+        <button id="showSessions" class="tab selected">Atendimentos</button>
+        <button id="showClients" class="tab">Clientes</button>
+      </nav>
+      <section id="sessionsView">
+      <div class="heading"><div><h2>Atendimentos recentes</h2><p>Os links são temporários e só registram consentimento explícito.</p></div><button id="newSession">+ Novo atendimento</button></div>
       <div id="newSessionPanel" class="panel hidden">
         <h2>Novo atendimento</h2><label>Nome do cliente (opcional)<input id="clientName" maxlength="100" placeholder="Ex.: João"></label>
-        <button id="createSession">Gerar link</button><div id="generatedLink" class="generated hidden"></div>
+        <label>Vincular cliente cadastrado<select id="sessionClient"><option value="">Atendimento avulso</option></select></label>
+        <button id="createSession">Gerar link</button><p id="sessionMessage" class="message" aria-live="polite"></p><div id="generatedLink" class="generated hidden"></div>
       </div>
-      <div class="panel"><div class="tableHead"><h2>Histórico recente</h2><button id="refresh" class="ghost">Atualizar</button></div><div id="sessions" class="sessions"><p>Carregando...</p></div></div>
+      <div class="panel"><div class="tableHead"><h2>Histórico</h2><button id="refresh" class="ghost">Atualizar</button></div><div id="sessions" class="sessions"><p>Carregando...</p></div></div>
+      </section>
+      <section id="clientsView" class="hidden">
+        <div class="heading"><div><h2>Clientes</h2><p>Os dados cadastrados ficam visíveis somente para este atendente.</p></div></div>
+        <form id="clientForm" class="panel">
+          <h2 id="clientFormTitle">Cadastrar cliente</h2>
+          <div class="form-grid">
+            <label>Nome<input id="clientNameInput" maxlength="100" required></label>
+            <label>E-mail (opcional)<input id="clientEmailInput" type="email" maxlength="254"></label>
+            <label>Telefone (opcional)<input id="clientPhoneInput" maxlength="40"></label>
+          </div>
+          <div class="actions"><button id="saveClient" type="submit">Cadastrar cliente</button><button id="cancelEditClient" type="button" class="ghost hidden">Cancelar edição</button></div>
+          <p id="clientMessage" class="message" aria-live="polite"></p>
+        </form>
+        <div class="panel"><div id="clients" class="sessions"><p>Carregando...</p></div></div>
+      </section>
     </section>
     <footer>HelpConnect · O acesso só começa após autorização explícita do cliente.</footer>
   </main>
-  <script src="app.js"></script>
+  <script src="config.js"></script><script src="realtime.js"></script><script src="app.js"></script>
 </body></html>

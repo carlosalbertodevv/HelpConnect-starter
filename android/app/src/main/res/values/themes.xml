@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.HelpConnect" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#175CD3</item>
+        <item name="colorSecondary">#12B76A</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">?android:colorBackground</item>
+        <item name="android:navigationBarColor">?android:colorBackground</item>
+    </style>
+</resources>

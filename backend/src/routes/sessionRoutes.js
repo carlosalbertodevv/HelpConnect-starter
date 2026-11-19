@@ -3,60 +3,194 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { config } from "../config.js";
 import { requireOperator } from "../middleware/operatorAuth.js";
-import { createRawToken, hashToken } from "../utils/tokens.js";
+import { createRawToken, createSessionCode, hashToken } from "../utils/tokens.js";
+import { findAuthorizedSession } from "../services/sessionAccess.js";
+import { issueDeviceTicket } from "../services/deviceTickets.js";
+import { createIceServers } from "../services/iceConfig.js";
+import { terminateSessionConnections } from "../websocket/sessionRegistry.js";
 
 const router = Router();
+const activeStatuses = ["PENDING", "CONSENTED", "CONNECTING", "ACTIVE"];
 const createSchema = z.object({
-  clientName: z.string().trim().max(100).optional(),
+  clientId: z.uuid().optional(),
+  clientName: z.string().trim().min(1).max(100).optional()
 }).strict();
+const idSchema = z.uuid();
+
+async function expireSessions(operatorId) {
+  const now = new Date();
+  while (true) {
+    const expired = await prisma.remoteSession.findMany({
+      where: { operatorId, status: { in: activeStatuses }, expiresAt: { lte: now } },
+      select: { id: true },
+      take: 500
+    });
+    if (!expired.length) return;
+
+    const terminatedIds = [];
+    await prisma.$transaction(async (tx) => {
+      for (const { id } of expired) {
+        const updated = await tx.remoteSession.updateMany({
+          where: { id, operatorId, status: { in: activeStatuses }, expiresAt: { lte: now } },
+          data: { status: "EXPIRED", endedAt: now }
+        });
+        if (updated.count) {
+          terminatedIds.push(id);
+          await tx.sessionLog.create({
+            data: { sessionId: id, event: "SESSION_EXPIRED", actorId: operatorId }
+          });
+        }
+      }
+    });
+    for (const id of terminatedIds) terminateSessionConnections(id, "expired");
+    if (expired.length < 500) return;
+  }
+}
+
+router.get("/dashboard", requireOperator, async (req, res, next) => {
+  try {
+    await expireSessions(req.operator.id);
+    const [total, pending, consented, active, clients] = await Promise.all([
+      prisma.remoteSession.count({ where: { operatorId: req.operator.id } }),
+      prisma.remoteSession.count({ where: { operatorId: req.operator.id, status: "PENDING" } }),
+      prisma.remoteSession.count({ where: { operatorId: req.operator.id, status: "CONSENTED" } }),
+      prisma.remoteSession.count({ where: { operatorId: req.operator.id, status: { in: ["CONNECTING", "ACTIVE"] } } }),
+      prisma.client.count({ where: { operatorId: req.operator.id, isActive: true } })
+    ]);
+    res.json({ metrics: { total, pending, consented, active, clients } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/", requireOperator, async (req, res, next) => {
+  try {
+    await expireSessions(req.operator.id);
+    const sessions = await prisma.remoteSession.findMany({
+      where: { operatorId: req.operator.id },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true, publicCode: true, clientId: true, clientName: true,
+        deviceModel: true, androidVersion: true, status: true, expiresAt: true,
+        consentedAt: true, startedAt: true, endedAt: true, createdAt: true
+      }
+    });
+    res.json({ sessions });
+  } catch (error) {
+    next(error);
+  }
+});
 
 router.post("/", requireOperator, async (req, res, next) => {
   try {
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
 
+    let client = null;
+    if (parsed.data.clientId) {
+      client = await prisma.client.findFirst({
+        where: { id: parsed.data.clientId, operatorId: req.operator.id, isActive: true },
+        select: { id: true, name: true }
+      });
+      if (!client) return res.status(404).json({ error: "Cliente não encontrado." });
+    }
+
     const rawToken = createRawToken();
     const expiresAt = new Date(Date.now() + config.sessionTtlMinutes * 60_000);
-    const session = await prisma.remoteSession.create({
-      data: {
-        operatorId: req.operator.id,
-        clientName: parsed.data.clientName || null,
-        accessTokenHash: hashToken(rawToken),
-        expiresAt
-      },
-      select: { id: true, clientName: true, status: true, expiresAt: true, createdAt: true }
+    const session = await prisma.$transaction(async (tx) => {
+      const created = await tx.remoteSession.create({
+        data: {
+          operatorId: req.operator.id,
+          clientId: client?.id ?? null,
+          clientName: client?.name ?? parsed.data.clientName ?? null,
+          publicCode: createSessionCode(),
+          accessTokenHash: hashToken(rawToken),
+          expiresAt
+        },
+        select: {
+          id: true, publicCode: true, clientId: true, clientName: true,
+          status: true, expiresAt: true, createdAt: true
+        }
+      });
+      await tx.sessionLog.create({
+        data: { sessionId: created.id, event: "SESSION_CREATED", actorId: req.operator.id }
+      });
+      return created;
     });
 
     const link = `${config.publicAppUrl.replace(/\/$/, "")}/client.html#${rawToken}`;
     res.status(201).json({ session, link });
-  } catch (error) { next(error); }
-});
-
-router.get("/", requireOperator, async (req, res, next) => {
-  try {
-    const sessions = await prisma.remoteSession.findMany({
-      where: { operatorId: req.operator.id },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-      select: {
-        id: true, clientName: true, deviceModel: true, androidVersion: true,
-        status: true, expiresAt: true, consentedAt: true, startedAt: true,
-        endedAt: true, createdAt: true
-      }
-    });
-    res.json({ sessions });
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.post("/:id/end", requireOperator, async (req, res, next) => {
   try {
-    const result = await prisma.remoteSession.updateMany({
-      where: { id: req.params.id, operatorId: req.operator.id, status: { in: ["PENDING", "CONSENTED", "CONNECTING", "ACTIVE"] } },
-      data: { status: "ENDED", endedAt: new Date() }
+    const parsedId = idSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Identificador inválido." });
+
+    const now = new Date();
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.remoteSession.updateMany({
+        where: {
+          id: parsedId.data,
+          operatorId: req.operator.id,
+          status: { in: activeStatuses }
+        },
+        data: { status: "ENDED", endedAt: now }
+      });
+      if (updated.count) {
+        await tx.sessionLog.create({
+          data: {
+            sessionId: parsedId.data,
+            event: "SESSION_ENDED_BY_OPERATOR",
+            actorId: req.operator.id
+          }
+        });
+      }
+      return updated;
     });
     if (!result.count) return res.status(404).json({ error: "Sessão não encontrada ou já encerrada." });
+    terminateSessionConnections(parsedId.data, "operator_ended");
     res.json({ ok: true });
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:id/device-ticket", requireOperator, async (req, res, next) => {
+  try {
+    const parsedId = idSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Identificador inválido." });
+    const session = await findAuthorizedSession(prisma, parsedId.data, req.operator.id);
+    if (!session) return res.status(404).json({ error: "Sessão não encontrada, sem consentimento ou expirada." });
+
+    const ticket = issueDeviceTicket(parsedId.data, config.deviceTicketTtlSeconds);
+    await prisma.sessionLog.create({
+      data: { sessionId: parsedId.data, event: "DEVICE_TICKET_ISSUED", actorId: req.operator.id }
+    });
+    res.status(201).json({
+      deviceToken: ticket.token,
+      expiresAt: ticket.expiresAt,
+      message: "Credencial temporária de uso único. Entregue-a ao aplicativo Android por um canal seguro."
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/:id/ice-servers", requireOperator, async (req, res, next) => {
+  try {
+    const parsedId = idSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Identificador inválido." });
+    const session = await findAuthorizedSession(prisma, parsedId.data, req.operator.id);
+    if (!session) return res.status(404).json({ error: "Sessão não encontrada, sem consentimento ou expirada." });
+    res.json(createIceServers(config, parsedId.data));
+  } catch (error) {
+    next(error);
+  }
 });
 
 export default router;
