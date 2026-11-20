@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import { requireOperator } from "../middleware/operatorAuth.js";
 import { createRawToken, createSessionCode, hashToken } from "../utils/tokens.js";
 import { findAuthorizedSession } from "../services/sessionAccess.js";
-import { issueDeviceTicket } from "../services/deviceTickets.js";
+import { issueDeviceTicket, revokeDeviceTickets } from "../services/deviceTickets.js";
 import { createIceServers } from "../services/iceConfig.js";
 import { terminateSessionConnections } from "../websocket/sessionRegistry.js";
 
@@ -42,7 +42,10 @@ async function expireSessions(operatorId) {
         }
       }
     });
-    for (const id of terminatedIds) terminateSessionConnections(id, "expired");
+    for (const id of terminatedIds) {
+      revokeDeviceTickets(id);
+      terminateSessionConnections(id, "expired");
+    }
     if (expired.length < 500) return;
   }
 }
@@ -153,6 +156,7 @@ router.post("/:id/end", requireOperator, async (req, res, next) => {
       return updated;
     });
     if (!result.count) return res.status(404).json({ error: "Sessão não encontrada ou já encerrada." });
+    revokeDeviceTickets(parsedId.data);
     terminateSessionConnections(parsedId.data, "operator_ended");
     res.json({ ok: true });
   } catch (error) {

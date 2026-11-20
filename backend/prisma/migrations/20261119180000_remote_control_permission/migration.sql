@@ -1,0 +1,1 @@
+ALTER TYPE "SessionPermissionType" ADD VALUE 'REMOTE_CONTROL';

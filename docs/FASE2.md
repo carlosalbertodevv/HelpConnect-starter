@@ -36,7 +36,7 @@ npm run prisma:generate
 npm run dev
 ```
 
-Sirva `frontend/` em `http://localhost:5500` (por exemplo, pelo Live Server) e ajuste `frontend/config.js` com a origem correspondente e `http://localhost:3001/api`. A API aceita somente a origem definida por `APP_ORIGIN`. A comunicação local usa `ws://`; produção exige HTTPS/WSS por meio de um proxy reverso confiável e `TRUST_PROXY` configurado conforme a implantação.
+Sirva `frontend/` em `http://localhost:5500` (por exemplo, pelo Live Server) e configure `frontend/config.js` com a URL da API. Para testar o link no Android Emulator, use `http://10.0.2.2:5500` no link, mantenha o Live Server acessível em `0.0.0.0` e permita a origem em `APP_ORIGINS`; a API aceita múltiplas origens explícitas. A comunicação local usa `ws://`; produção exige HTTPS/WSS por meio de um proxy reverso confiável e `TRUST_PROXY` configurado conforme a implantação.
 
 ## Rotas adicionais
 

@@ -3,6 +3,7 @@ package com.helpconnect.android.webrtc
 import android.content.Context
 import android.content.Intent
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 import com.helpconnect.android.signaling.IceServerConfig
 import com.helpconnect.android.signaling.RemoteIceCandidate
@@ -73,7 +74,10 @@ class WebRtcScreenPublisher(
                 permissionData,
                 object : android.media.projection.MediaProjection.Callback() {
                     override fun onStop() {
-                        if (!disposed.get()) onProjectionStopped()
+                        if (!disposed.get()) {
+                            Log.w(TAG, "MediaProjection callback reported stop")
+                            onProjectionStopped()
+                        }
                     }
                 }
             )
@@ -89,6 +93,7 @@ class WebRtcScreenPublisher(
             )
             val metrics = displayMetrics()
             val (width, height) = captureSize(metrics.widthPixels, metrics.heightPixels)
+            Log.i(TAG, "Starting screen capture at ${width}x$height")
             screenCapturer.startCapture(width, height, 15)
             onCaptureStarted()
 
@@ -98,6 +103,7 @@ class WebRtcScreenPublisher(
             checkNotNull(peerConnection).addTrack(track, listOf("helpconnect-screen"))
             createOffer()
         } catch (error: Exception) {
+            Log.e(TAG, "Unable to start screen capture or WebRTC publishing", error)
             onFailure("Não foi possível iniciar a captura WebRTC.")
             close()
         }
@@ -122,6 +128,7 @@ class WebRtcScreenPublisher(
             }
 
             override fun onSetFailure(error: String?) {
+                Log.e(TAG, "Failed to apply remote SDP description")
                 onFailure("Não foi possível processar a descrição SDP remota.")
             }
 
@@ -184,6 +191,7 @@ class WebRtcScreenPublisher(
                     }
 
                     override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "Failed to set local SDP offer")
                         onFailure("Não foi possível definir a oferta SDP local.")
                     }
 
@@ -193,6 +201,7 @@ class WebRtcScreenPublisher(
             }
 
             override fun onCreateFailure(error: String?) {
+                Log.e(TAG, "Failed to create local SDP offer")
                 onFailure("Não foi possível criar a oferta WebRTC.")
             }
 
@@ -214,6 +223,7 @@ class WebRtcScreenPublisher(
                     }
 
                     override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "Failed to set local SDP answer")
                         onFailure("Não foi possível definir a resposta SDP local.")
                     }
 
@@ -223,6 +233,7 @@ class WebRtcScreenPublisher(
             }
 
             override fun onCreateFailure(error: String?) {
+                Log.e(TAG, "Failed to create local SDP answer")
                 onFailure("Não foi possível responder à oferta WebRTC.")
             }
 
@@ -233,7 +244,9 @@ class WebRtcScreenPublisher(
 
     private fun createObserver(): PeerConnection.Observer = object : PeerConnection.Observer {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) = Unit
-        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) = Unit
+        override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+            state?.let { Log.i(TAG, "ICE connection state: ${it.name.lowercase()}") }
+        }
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
             if (state == PeerConnection.IceGatheringState.COMPLETE && !disposed.get()) {
@@ -251,7 +264,10 @@ class WebRtcScreenPublisher(
         override fun onAddTrack(receiver: org.webrtc.RtpReceiver?, streams: Array<out org.webrtc.MediaStream>?) = Unit
         override fun onTrack(transceiver: org.webrtc.RtpTransceiver?) = Unit
         override fun onConnectionChange(state: PeerConnection.PeerConnectionState?) {
-            state?.let { onConnectionState(it.name.lowercase()) }
+            state?.let {
+                Log.i(TAG, "Peer connection state: ${it.name.lowercase()}")
+                onConnectionState(it.name.lowercase())
+            }
         }
     }
 
@@ -294,6 +310,7 @@ class WebRtcScreenPublisher(
     }
 
     companion object {
+        private const val TAG = "WebRtcScreenPublisher"
         @Volatile private var factoryInitialized = false
     }
 }

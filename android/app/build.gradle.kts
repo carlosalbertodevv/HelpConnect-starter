@@ -5,7 +5,7 @@ plugins {
 
 val configuredApiUrl = providers.gradleProperty("helpconnectApiBaseUrl")
     .orElse(providers.environmentVariable("HELPCONNECT_API_BASE_URL"))
-    .getOrElse("https://api.example.invalid/api")
+    .getOrElse("http://10.0.2.2:3001/api")
 val escapedApiUrl = configuredApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")
 
 android {
@@ -42,6 +42,16 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+}
+
+afterEvaluate {
+    tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach {
+        doFirst {
+            require(configuredApiUrl.startsWith("https://") && !configuredApiUrl.contains("example.invalid")) {
+                "Configure uma URL HTTPS por helpconnectApiBaseUrl ou HELPCONNECT_API_BASE_URL antes de gerar um build release."
+            }
+        }
     }
 }
 

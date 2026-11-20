@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { issueDeviceTicket } from "../backend/src/services/deviceTickets.js";
+import { consumeDeviceTicket, issueDeviceTicket, revokeDeviceTickets } from "../backend/src/services/deviceTickets.js";
 import { resolveDeviceTicketSession } from "../backend/src/services/deviceTicketSessions.js";
 
 function createPrisma(session) {
@@ -65,4 +65,12 @@ test("does not resolve expired, unconsented, or invalid tickets", async () => {
     await resolveDeviceTicketSession(createPrisma(session), session.publicCode, "not-a-ticket"),
     null
   );
+});
+
+test("revoking a session invalidates pending tickets and prevents replay", () => {
+  const sessionId = randomUUID();
+  const ticket = issueDeviceTicket(sessionId, 120);
+
+  assert.deepEqual(revokeDeviceTickets(sessionId), 1);
+  assert.equal(consumeDeviceTicket(ticket.token), null);
 });

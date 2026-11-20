@@ -1,5 +1,6 @@
 package com.helpconnect.android.signaling
 
+import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -19,6 +20,9 @@ class DeviceSignalingClient(
         fun onDescription(type: String, sdp: String)
         fun onIceCandidate(candidate: RemoteIceCandidate?)
         fun onPeerState(transport: String, participant: String?, state: String)
+        fun onRemoteControlState(available: Boolean) = Unit
+        fun onRemoteControlCommand(command: RemoteControlCommand) = Unit
+        fun onRemoteControlFailure(message: String) = Unit
         fun onSessionEnded(reason: String)
         fun onFailure(message: String)
     }
@@ -49,12 +53,14 @@ class DeviceSignalingClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!intentionallyClosed) {
+                    Log.e(TAG, "WebSocket signaling failed", t)
                     fail("A conexão WebSocket falhou. Gere uma nova credencial no painel antes de tentar novamente.")
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (!intentionallyClosed && !terminal.get()) {
+                    Log.w(TAG, "WebSocket signaling closed unexpectedly (code=$code)")
                     fail("A conexão WebSocket foi encerrada. Gere uma nova credencial antes de reconectar.")
                 }
             }
@@ -90,6 +96,26 @@ class DeviceSignalingClient(
         send("connection_state", "operator", payload)
     }
 
+    fun sendRemoteControlState(available: Boolean) {
+        send(
+            "remote_control_state",
+            "operator",
+            JSONObject().put("available", available)
+        )
+    }
+
+    fun sendRemoteControlResult(
+        command: RemoteControlCommand,
+        status: String,
+        errorCode: String? = null
+    ) {
+        val payload = JSONObject()
+            .put("commandId", command.commandId)
+            .put("status", status)
+        if (errorCode != null) payload.put("errorCode", errorCode)
+        send("remote_control_result", "operator", payload)
+    }
+
     private fun send(type: String, recipient: String, payload: JSONObject) {
         if (!joined || terminal.get()) return
         val message = SignalProtocol.signalMessage(
@@ -100,6 +126,7 @@ class DeviceSignalingClient(
             payload
         )
         if (socket?.send(message) != true) {
+            Log.e(TAG, "Unable to send signaling message (type=$type)")
             fail("Não foi possível enviar sinalização ao atendente.")
         }
     }
@@ -119,10 +146,19 @@ class DeviceSignalingClient(
             is ServerSignal.IceCandidate -> listener.onIceCandidate(signal.candidate)
             is ServerSignal.ConnectionState ->
                 listener.onPeerState(signal.transport, signal.participant, signal.state)
+            is ServerSignal.RemoteControlState -> listener.onRemoteControlState(signal.available)
+            is ServerSignal.RemoteControlCommandReceived -> listener.onRemoteControlCommand(signal.command)
             is ServerSignal.SessionEnded -> {
                 if (terminal.compareAndSet(false, true)) listener.onSessionEnded(signal.reason)
             }
             is ServerSignal.Error -> {
+                if (
+                    signal.code.startsWith("CONTROL_") ||
+                    signal.code in setOf("DUPLICATE_COMMAND", "INVALID_CONTROL_RESULT", "RATE_LIMITED")
+                ) {
+                    listener.onRemoteControlFailure(signal.message)
+                    return
+                }
                 val message = when (signal.code) {
                     "UNAUTHENTICATED" -> "Credencial inválida, expirada ou já utilizada. Solicite uma nova."
                     "SESSION_FORBIDDEN" -> "A sessão expirou, foi encerrada ou não possui consentimento ativo."
@@ -156,12 +192,15 @@ class DeviceSignalingClient(
 
     private fun fail(message: String) {
         if (terminal.compareAndSet(false, true)) {
+            Log.w(TAG, "Signaling session failed")
             listener.onFailure(message)
             socket?.cancel()
         }
     }
 
     companion object {
+        private const val TAG = "DeviceSignaling"
+
         private fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .pingInterval(20, TimeUnit.SECONDS)
             .connectTimeout(10, TimeUnit.SECONDS)

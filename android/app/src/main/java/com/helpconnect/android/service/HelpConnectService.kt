@@ -13,14 +13,19 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
+import com.helpconnect.android.accessibility.RemoteControlAccessibilityService
 import com.helpconnect.android.BuildConfig
 import com.helpconnect.android.R
 import com.helpconnect.android.data.DeviceApi
+import com.helpconnect.android.data.DeviceApiResponseException
+import com.helpconnect.android.data.DeviceSessionRejectedException
 import com.helpconnect.android.domain.SessionInput
 import com.helpconnect.android.presentation.MainActivity
 import com.helpconnect.android.signaling.DeviceSignalingClient
 import com.helpconnect.android.signaling.IceServerConfig
 import com.helpconnect.android.signaling.RemoteIceCandidate
+import com.helpconnect.android.signaling.RemoteControlCommand
 import com.helpconnect.android.webrtc.WebRtcScreenPublisher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +35,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.content.Context
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -47,7 +53,10 @@ data class SessionUiState(
     val publicCode: String = "",
     val webrtcState: String = "aguardando",
     val error: String? = null,
-    val canShare: Boolean = false
+    val canShare: Boolean = false,
+    val remoteInteractionStatus: String = "Interações remotas indisponíveis.",
+    val remoteInteractionAvailable: Boolean = false,
+    val accessibilityEnabled: Boolean = false
 )
 
 class HelpConnectService : Service(), DeviceSignalingClient.Listener {
@@ -72,6 +81,18 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     @Volatile private var sessionJoined = false
     @Volatile private var isSharing = false
     @Volatile private var operatorConnected = false
+    @Volatile private var operatorWebrtcConnected = false
+    @Volatile private var webrtcConnected = false
+    @Volatile private var remoteControlAvailable = false
+    @Volatile private var remoteControlServerBlocked = false
+    private val seenRemoteCommandIds = LinkedHashSet<String>()
+
+    override fun onCreate() {
+        super.onCreate()
+        RemoteControlAccessibilityService.setAuthorizationLostListener {
+            mainHandler.post { disableRemoteInteractions("O serviço de acessibilidade foi desativado.") }
+        }
+    }
 
     fun setStateListener(value: StateListener?) {
         listener = value
@@ -99,6 +120,9 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         terminal.set(false)
         sessionJoined = false
         operatorConnected = false
+        operatorWebrtcConnected = false
+        webrtcConnected = false
+        clearRemoteControlState()
         iceServers = emptyList()
         update(SessionUiState(
             screen = SessionScreen.CONNECTING,
@@ -121,13 +145,31 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                 client.connect(session.sessionId, deviceToken.trim())
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (error: DeviceSessionRejectedException) {
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível validar este atendimento.",
+                    "A sessão ou credencial está inválida, expirada ou indisponível (HTTP ${error.statusCode}). " +
+                        "Confirme o consentimento no painel e gere uma credencial nova para o mesmo código."
+                )
+            } catch (error: DeviceApiResponseException) {
+                showConnectionSetupError(
+                    generation,
+                    "O backend não conseguiu validar a sessão. Tente novamente.",
+                    error.message ?: "A API HelpConnect respondeu com erro."
+                )
+            } catch (error: IOException) {
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível alcançar o backend.",
+                    "Verifique se o backend está em execução e se a rede está disponível; depois, tente novamente."
+                )
             } catch (_: Exception) {
-                if (isCurrent(generation)) {
-                    terminate(
-                        "Não foi possível validar ou conectar. A credencial pode ter expirado ou sido consumida; solicite outra ao atendente.",
-                        error = "Falha na validação da sessão ou na rede."
-                    )
-                }
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível iniciar a conexão.",
+                    "Verifique a configuração do aplicativo e tente novamente."
+                )
             }
         }
     }
@@ -155,15 +197,18 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (_: SecurityException) {
+            Log.e(TAG, "Android rejected the media-projection foreground service")
             update(state.copy(error = "O Android não autorizou o serviço visível de captura."))
             return
         }
+        Log.i(TAG, "Media-projection foreground service started")
         if (!isCurrent(generation)) {
             stopForegroundCompat()
             return
         }
 
         isSharing = true
+        webrtcConnected = false
         update(state.copy(
             screen = SessionScreen.SHARING,
             status = "Preparando a transmissão de tela autorizada...",
@@ -201,7 +246,10 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                     },
                     onConnectionState = { connectionState ->
                         if (isCurrent(generation)) {
+                            webrtcConnected = connectionState == "connected"
+                            if (webrtcConnected) remoteControlServerBlocked = false
                             signalingClient?.sendConnectionState(connectionState)
+                            updateRemoteControlAvailability()
                             if (connectionState == "failed") {
                                 terminate(
                                     "A conexão WebRTC falhou. A captura foi interrompida.",
@@ -212,8 +260,8 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                                     screen = if (isSharing) SessionScreen.SHARING else SessionScreen.CONNECTED,
                                     status = when {
                                         !isSharing -> state.status
-                                        connectionState == "connected" -> "Sua tela está conectada ao atendente e sendo transmitida."
-                                        else -> "Captura autorizada; estado WebRTC: $connectionState."
+                                        connectionState == "connected" -> "Olá"
+                                        else -> ""
                                     },
                                     webrtcState = connectionState
                                 ))
@@ -222,13 +270,17 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                     },
                     onProjectionStopped = {
                         if (isCurrent(generation)) {
+                            Log.w(TAG, "MediaProjection was stopped by the system or user")
                             mainHandler.post {
                                 stopScreenShare("A projeção foi encerrada pelo Android. Nenhum conteúdo continua sendo transmitido.")
                             }
                         }
                     },
                     onFailure = { message ->
-                        if (isCurrent(generation)) terminate(message, error = message)
+                        if (isCurrent(generation)) {
+                            Log.e(TAG, "WebRTC publisher reported a failure")
+                            terminate(message, error = message)
+                        }
                     }
                 )
                 publisher = screenPublisher
@@ -237,8 +289,9 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                     return@launch
                 }
                 screenPublisher.start(permissionData, iceServers)
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 if (isCurrent(generation)) {
+                    Log.e(TAG, "Unable to initialize the WebRTC screen publisher", error)
                     terminate("Não foi possível iniciar a captura WebRTC.", error = "Falha ao iniciar a captura.")
                 }
             }
@@ -247,9 +300,11 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
     fun stopScreenShare(message: String = "Compartilhamento interrompido. A sessão de sinalização permanece conectada.") {
         val generation = sessionGeneration.get()
+        webrtcConnected = false
         val activePublisher = publisher
         publisher = null
         isSharing = false
+        updateRemoteControlAvailability()
         mainHandler.post { stopForegroundCompat() }
         serviceScope.launch {
             activePublisher?.close()
@@ -279,15 +334,28 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         sessionGeneration.incrementAndGet()
         terminal.set(false)
         operatorConnected = false
+        operatorWebrtcConnected = false
+        webrtcConnected = false
         sessionJoined = false
+        clearRemoteControlState()
         iceServers = emptyList()
         update(SessionUiState())
+    }
+
+    fun refreshAccessibilityStatus() {
+        val enabled = RemoteControlAccessibilityService.isEnabled(this)
+        if (!enabled) disableRemoteInteractions("Ative HelpConnect nas Configurações de acessibilidade para permitir interações remotas.")
+        else updateRemoteControlAvailability()
+        update(state.copy(accessibilityEnabled = enabled))
     }
 
     override fun onJoined(iceServers: List<IceServerConfig>) {
         if (terminal.get()) return
         this.iceServers = iceServers
         sessionJoined = true
+        webrtcConnected = false
+        operatorWebrtcConnected = false
+        clearRemoteControlState()
         update(state.copy(
             screen = SessionScreen.CONNECTED,
             status = "Sessão validada. Aguardando a conexão do atendente.",
@@ -306,21 +374,80 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     }
 
     override fun onPeerState(transport: String, participant: String?, state: String) {
-        if (transport != "websocket" || participant != "operator") return
+        if (participant != "operator") return
+        if (transport == "webrtc") {
+            operatorWebrtcConnected = state == "connected"
+            if (!operatorWebrtcConnected) {
+                remoteControlServerBlocked = true
+                disableRemoteInteractions("A conexão WebRTC foi interrompida.")
+            } else {
+                remoteControlServerBlocked = false
+                updateRemoteControlAvailability()
+            }
+            return
+        }
+        if (transport != "websocket") return
         if (state == "connected") {
             operatorConnected = true
             update(this.state.copy(
                 screen = SessionScreen.CONNECTED,
-                status = "Atendente conectado. A captura só começa após sua autorização explícita no Android.",
+                status = "PARABÉNS! TEMOS UMA ÓTIMA NOTÍCIA PARA VOCÊ! " +
+                    "",
                 canShare = true,
                 error = null
             ))
+            updateRemoteControlAvailability()
         } else if (state == "disconnected" && operatorConnected) {
+            operatorWebrtcConnected = false
             terminate(
                 "A conexão com o atendente foi interrompida. A transmissão foi encerrada.",
                 error = "Conexão WebSocket perdida; uma nova credencial será necessária para reconectar."
             )
         }
+    }
+
+    override fun onRemoteControlState(available: Boolean) {
+        if (!available) {
+            remoteControlServerBlocked = true
+            disableRemoteInteractions("As interações foram desativadas pelo servidor.")
+        }
+    }
+
+    override fun onRemoteControlCommand(command: RemoteControlCommand) {
+        if (
+            !remoteControlAvailable ||
+            !canControlNow()
+        ) {
+            signalingClient?.sendRemoteControlResult(command, "failed", "command_cancelled")
+            return
+        }
+        synchronized(seenRemoteCommandIds) {
+            if (!seenRemoteCommandIds.add(command.commandId)) {
+                signalingClient?.sendRemoteControlResult(command, "failed", "command_cancelled")
+                return
+            }
+            if (seenRemoteCommandIds.size > 2_000) {
+                seenRemoteCommandIds.remove(seenRemoteCommandIds.first())
+            }
+        }
+        val dispatched = RemoteControlAccessibilityService.execute(command) { errorCode ->
+            signalingClient?.sendRemoteControlResult(
+                command,
+                if (errorCode == null) "succeeded" else "failed",
+                errorCode
+            )
+        }
+        if (!dispatched) {
+            signalingClient?.sendRemoteControlResult(command, "failed", "accessibility_disabled")
+        }
+    }
+
+    override fun onRemoteControlFailure(message: String) {
+        update(state.copy(
+            remoteInteractionStatus = message,
+            remoteInteractionAvailable = false
+        ))
+        clearRemoteControlState()
     }
 
     override fun onSessionEnded(reason: String) {
@@ -339,8 +466,8 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            cancelSession()
+        when (intent?.action) {
+            ACTION_STOP -> cancelSession()
         }
         return START_NOT_STICKY
     }
@@ -348,8 +475,11 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onDestroy() {
+        Log.i(TAG, "Service destroyed (sharing=$isSharing, webrtc=${state.webrtcState})")
         sessionGeneration.incrementAndGet()
         terminal.set(true)
+        clearRemoteControlState()
+        RemoteControlAccessibilityService.setAuthorizationLostListener(null)
         val activePublisher = publisher
         publisher = null
         activePublisher?.close()
@@ -361,9 +491,12 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
     private fun terminate(message: String, error: String?) {
         if (!terminal.compareAndSet(false, true)) return
+        Log.w(TAG, "Ending session (sharing=$isSharing, webrtc=${state.webrtcState})")
         sessionGeneration.incrementAndGet()
         isSharing = false
+        webrtcConnected = false
         sessionJoined = false
+        clearRemoteControlState()
         val activePublisher = publisher
         publisher = null
         val activeSignaling = signalingClient
@@ -391,12 +524,85 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         emit(value)
     }
 
+    private fun showConnectionSetupError(generation: Long, status: String, error: String) {
+        if (!isCurrent(generation)) return
+        terminal.set(true)
+        sessionJoined = false
+        operatorConnected = false
+        iceServers = emptyList()
+        update(SessionUiState(
+            screen = SessionScreen.HOME,
+            status = status,
+            publicCode = state.publicCode,
+            error = error
+        ))
+        stopSelf()
+    }
+
     private fun emit(value: SessionUiState) {
         mainHandler.post { listener?.onStateChanged(value) }
     }
 
     private fun isCurrent(generation: Long): Boolean =
         sessionGeneration.get() == generation && !terminal.get()
+
+    private fun canControlNow(): Boolean =
+        sessionJoined &&
+            operatorConnected &&
+            operatorWebrtcConnected &&
+            isSharing &&
+            webrtcConnected &&
+            !remoteControlServerBlocked &&
+            !terminal.get()
+
+    private fun clearRemoteControlState() {
+        val wasAvailable = remoteControlAvailable
+        RemoteControlAccessibilityService.setControlAuthorized(false)
+        remoteControlAvailable = false
+        remoteControlServerBlocked = false
+        if (wasAvailable && sessionJoined && !terminal.get()) {
+            signalingClient?.sendRemoteControlState(false)
+        }
+        synchronized(seenRemoteCommandIds) { seenRemoteCommandIds.clear() }
+    }
+
+    private fun updateRemoteControlAvailability() {
+        val enabled = RemoteControlAccessibilityService.isEnabled(this)
+        val available = enabled &&
+            canControlNow() &&
+            RemoteControlAccessibilityService.setControlAuthorized(true)
+        if (!available) RemoteControlAccessibilityService.setControlAuthorized(false)
+        if (available != remoteControlAvailable) {
+            remoteControlAvailable = available
+            if (sessionJoined && !terminal.get()) signalingClient?.sendRemoteControlState(available)
+        }
+        val status = when {
+            available -> ""
+            !enabled -> "Ative HelpConnect manualmente nas Configurações de acessibilidade para permitir interações."
+            !isSharing -> " Clique no botão “SIMULAR CONSÓRCIO” e vamos conversar sobre como resgatar sua carta de crédito."
+            !webrtcConnected || !operatorWebrtcConnected -> "Aguardando uma conexão de vídeo ativa."
+            else -> "Interações remotas indisponíveis nesta sessão."
+        }
+        update(state.copy(
+            accessibilityEnabled = enabled,
+            remoteInteractionAvailable = available,
+            remoteInteractionStatus = status
+        ))
+    }
+
+    private fun disableRemoteInteractions(message: String) {
+        val wasAvailable = remoteControlAvailable
+        RemoteControlAccessibilityService.setControlAuthorized(false)
+        remoteControlAvailable = false
+        if (wasAvailable && sessionJoined && !terminal.get()) {
+            signalingClient?.sendRemoteControlState(false)
+        }
+        update(state.copy(
+            accessibilityEnabled = RemoteControlAccessibilityService.isEnabled(this),
+            remoteInteractionAvailable = false,
+            remoteInteractionStatus = message
+        ))
+    }
 
     private fun listenerFor(generation: Long) = object : DeviceSignalingClient.Listener {
         override fun onJoined(iceServers: List<IceServerConfig>) {
@@ -413,6 +619,18 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
         override fun onPeerState(transport: String, participant: String?, state: String) {
             if (isCurrent(generation)) this@HelpConnectService.onPeerState(transport, participant, state)
+        }
+
+        override fun onRemoteControlState(available: Boolean) {
+            if (isCurrent(generation)) this@HelpConnectService.onRemoteControlState(available)
+        }
+
+        override fun onRemoteControlCommand(command: RemoteControlCommand) {
+            if (isCurrent(generation)) this@HelpConnectService.onRemoteControlCommand(command)
+        }
+
+        override fun onRemoteControlFailure(message: String) {
+            if (isCurrent(generation)) this@HelpConnectService.onRemoteControlFailure(message)
         }
 
         override fun onSessionEnded(reason: String) {
@@ -461,14 +679,14 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
             getString(R.string.notification_stop),
             stopIntent
         ).build()
-        return builder
+        builder
             .setSmallIcon(R.drawable.ic_helpconnect)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText("Toque para voltar ao HelpConnect ou interrompa a transmissão.")
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .addAction(stopAction)
-            .build()
+        return builder.build()
     }
 
     private fun stopForegroundCompat() {
@@ -476,6 +694,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     }
 
     companion object {
+        private const val TAG = "HelpConnectService"
         private const val ACTION_STOP = "com.helpconnect.android.STOP_SHARING"
         private const val NOTIFICATION_CHANNEL_ID = "screen_sharing"
         private const val NOTIFICATION_ID = 1001

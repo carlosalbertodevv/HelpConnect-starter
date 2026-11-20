@@ -24,7 +24,10 @@ Referências oficiais: [MediaProjection](https://developer.android.com/guide/top
 
 - A autorização web não substitui nem antecipa o diálogo Android.
 - O Android pode exibir aviso próprio de compartilhamento/privacidade e interromper a projeção a qualquer momento.
+- Sair da Activity não encerra a sessão: ela apenas remove o listener visual; o `HelpConnectService` mantém a captura em foreground. Se a transmissão parar, investigue os eventos de revogação da projeção, desconexão WebSocket/ICE ou destruição do serviço antes de atribuir a causa à troca de aplicativo.
 - Telas/áreas protegidas por `FLAG_SECURE` ou DRM podem aparecer vazias/pretas; o app não tenta contorná-las.
 - Mudança de orientação, janelas flutuantes, perfis de trabalho e políticas do fabricante podem alterar o que é capturado.
 - Samsung, Motorola, Xiaomi e Pixel usam APIs oficiais idênticas, mas podem impor otimização de bateria e notificações distintas. Validar em cada fabricante é necessário.
 - O sistema pode encerrar o processo. Nesse caso, a conexão termina; não existe serviço para reiniciar captura sem nova ação e consentimento do cliente.
+
+Para diagnosticar uma interrupção em um dispositivo conectado, filtre o Logcat por `HelpConnectService`, `DeviceSignaling` e `WebRtcScreenPublisher`. Os eventos registram estado e causa técnica sem incluir credenciais, SDP ou conteúdo da tela. A automação de build não substitui os testes de captura e conexão em aparelho real.

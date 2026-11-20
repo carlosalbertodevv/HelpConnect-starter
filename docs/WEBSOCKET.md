@@ -30,6 +30,7 @@ Quando o segundo participante entra, ambos recebem um `connection_state` WebSock
 - `offer` e `answer`: incluem `recipient` (`operator` ou `device`) e descrição SDP com tipo correspondente.
 - `ice_candidate`: inclui destinatário e candidate ICE (também aceita `null` para fim de gathering).
 - `connection_state`: estado WebRTC (`new`, `connecting`, `connected`, `disconnected`, `failed`, `closed`) e destinatário.
+- `remote_control_state`, `remote_control_command` e `remote_control_result`: disponibilidade confirmada pelo dispositivo e interações autorizadas pelo consentimento da sessão, descritas em [CONTROLE-REMOTO.md](./CONTROLE-REMOTO.md). Não existe pedido ou aprovação adicional de controle.
 - Mensagens do servidor: `join_session`, `connection_state` (também indica conectividade WebSocket do peer), `session_ended` e `error`.
 
 Exemplo de offer:
@@ -50,8 +51,9 @@ O cliente não escolhe o ID de destino ou a sessão nas mensagens de sinalizaç�
 
 - Payload máximo: 16 KiB; SDP: 12 KiB; candidate: 4 KiB.
 - Máximo de 30 mensagens por conexão a cada 10 segundos; máximo de conexões e tentativas de handshake por IP também é limitado.
+- Comandos têm limite adicional de 8 por segundo, 2.000 IDs únicos por conexão de atendente e até 64 comandos pendentes por conexão Android.
 - Heartbeat ping/pong detecta sockets mortos. Sessão e consentimento são verificados na entrada, em cada mensagem e a cada cinco segundos.
 - O encerramento, expiração ou revogação fecha os sockets e emite `session_ended`.
-- Credenciais, SDP e candidates não são registrados. O log de auditoria registra somente eventos de conexão/saída e emissão de credencial.
+- Credenciais, SDP, candidates, coordenadas e conteúdo digitado não são registrados. A auditoria registra eventos de conexão/saída, emissão de credencial, disponibilidade de interações, tipos de ação e resultados.
 
 Os limitadores e sequências anti-replay são em memória e por processo. Deploy com múltiplas instâncias requer um armazenamento compartilhado apropriado antes de escalar.

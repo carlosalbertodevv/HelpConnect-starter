@@ -20,6 +20,12 @@ data class ResolvedDeviceSession(
     val expiresAt: String
 )
 
+class DeviceSessionRejectedException(val statusCode: Int) :
+    IOException("Sessão ou credencial indisponível.")
+
+class DeviceApiResponseException(val statusCode: Int) :
+    IOException("A API respondeu com erro HTTP $statusCode.")
+
 class DeviceApi(
     private val apiBaseUrl: String,
     private val client: OkHttpClient = defaultClient()
@@ -47,7 +53,10 @@ class DeviceApi(
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    throw IOException("Sessão indisponível ou credencial inválida/expirada.")
+                    if (response.code == 400 || response.code == 404) {
+                        throw DeviceSessionRejectedException(response.code)
+                    }
+                    throw DeviceApiResponseException(response.code)
                 }
                 val json = JSONObject(responseBody)
                 val sessionId = json.getString("sessionId")

@@ -12,6 +12,7 @@ const realtimeConnections = new Map();
 const $ = (id) => document.getElementById(id);
 const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
 const message = (id, text) => { $(id).textContent = text; };
+const themeStorageKey = "helpconnect-theme";
 
 async function api(path, options = {}) {
   const response = await fetch(`${apiUrl}${path}`, {
@@ -28,20 +29,52 @@ async function api(path, options = {}) {
 }
 
 function setView(view) {
-  const clients = view === "clients";
-  show("sessionsView", !clients);
-  show("clientsView", clients);
-  $("showSessions").classList.toggle("selected", !clients);
-  $("showClients").classList.toggle("selected", clients);
+  const views = {
+    dashboard: ["dashboardView", "Visão geral", "PAINEL"],
+    sessions: ["sessionsView", "Atendimentos", "ATENDIMENTOS"],
+    clients: ["clientsView", "Clientes", "CLIENTES"],
+    settings: ["settingsView", "Configurações", "PREFERÊNCIAS"]
+  };
+  const selected = views[view] ? view : "dashboard";
+  for (const [name, [elementId]] of Object.entries(views)) {
+    show(elementId, name === selected);
+    const navigation = $("nav" + name[0].toUpperCase() + name.slice(1));
+    navigation.classList.toggle("active", name === selected);
+    if (name === selected) navigation.setAttribute("aria-current", "page");
+    else navigation.removeAttribute("aria-current");
+  }
+  $("pageTitle").textContent = views[selected][1];
+  $("pageSection").textContent = views[selected][2];
 }
 
 async function enter(userSession) {
   accessToken = userSession.access_token;
+  show("publicHeader", false);
   show("login", false);
   show("dashboard", true);
   show("logout", true);
+  setView("dashboard");
   await Promise.all([loadSessions(), loadClients(), loadDashboard()]);
 }
+
+function applyTheme(theme) {
+  const selectedTheme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = selectedTheme;
+  $("themeSelect").value = selectedTheme;
+}
+
+function initializeTheme() {
+  let savedTheme = "light";
+  try {
+    const storedTheme = localStorage.getItem(themeStorageKey);
+    if (storedTheme === "light" || storedTheme === "dark") savedTheme = storedTheme;
+  } catch {
+    message("settingsMessage", "O tema padrão foi aplicado, mas não foi possível ler preferências salvas neste navegador.");
+  }
+  applyTheme(savedTheme);
+}
+
+initializeTheme();
 
 function updateClientForm(client = null) {
   editingClientId = client?.id ?? null;
@@ -78,6 +111,8 @@ $("loginBtn").onclick = async () => {
 $("logout").onclick = async () => {
   await sb?.auth.signOut();
   accessToken = null;
+  setView("dashboard");
+  show("publicHeader", true);
   show("dashboard", false);
   show("login", true);
   show("logout", false);
@@ -88,8 +123,21 @@ sb?.auth.onAuthStateChange((_event, session) => {
 });
 
 $("newSession").onclick = () => show("newSessionPanel", $("newSessionPanel").classList.contains("hidden"));
-$("showSessions").onclick = () => setView("sessions");
-$("showClients").onclick = () => setView("clients");
+$("navDashboard").onclick = () => setView("dashboard");
+$("navSessions").onclick = () => setView("sessions");
+$("navClients").onclick = () => setView("clients");
+$("navSettings").onclick = () => setView("settings");
+$("dashboardSessions").onclick = () => setView("sessions");
+$("dashboardClients").onclick = () => setView("clients");
+$("themeSelect").onchange = () => {
+  applyTheme($("themeSelect").value);
+  try {
+    localStorage.setItem(themeStorageKey, $("themeSelect").value);
+    message("settingsMessage", "Preferência salva neste navegador.");
+  } catch {
+    message("settingsMessage", "Tema aplicado, mas não foi possível salvar a preferência neste navegador.");
+  }
+};
 $("refresh").onclick = async () => {
   await Promise.all([loadSessions(), loadDashboard()]);
 };
@@ -136,14 +184,20 @@ $("createSession").onclick = async () => {
 };
 
 async function loadDashboard() {
+  const metricsContainer = document.querySelector(".metrics");
+  metricsContainer.setAttribute("aria-busy", "true");
+  message("dashboardMessage", "Carregando indicadores...");
   try {
     const { metrics } = await api("/sessions/dashboard");
     $("metricTotal").textContent = metrics.total;
     $("metricPending").textContent = metrics.pending;
     $("metricConsented").textContent = metrics.consented;
     $("metricClients").textContent = metrics.clients;
+    message("dashboardMessage", "");
   } catch (error) {
-    message("sessionMessage", error.message);
+    message("dashboardMessage", error.message);
+  } finally {
+    metricsContainer.setAttribute("aria-busy", "false");
   }
 }
 
@@ -185,6 +239,9 @@ async function loadSessions() {
           state.textContent = `${label}: desconectado`;
           states.append(state);
         }
+          const transmissionStatus = document.createElement("strong");
+          transmissionStatus.id = `realtime-${session.id}-status`;
+          transmissionStatus.textContent = "Aguardando dispositivo";
         const actions = document.createElement("div");
         actions.className = "actions";
         const connect = document.createElement("button");
@@ -208,6 +265,20 @@ async function loadSessions() {
               onState: (transport, value) => {
                 const target = document.getElementById(`realtime-${session.id}-${transport}`);
                 if (target) target.textContent = `${transportLabel(transport)}: ${translateRealtimeState(value)}`;
+                const transmissionStatus = document.getElementById(`realtime-${session.id}-status`);
+                const placeholder = document.getElementById(`realtime-${session.id}-placeholder`);
+                if (transport === "device") {
+                  if (value === "connected" && transmissionStatus) transmissionStatus.textContent = "Aguardando autorização no Android";
+                  if (value === "disconnected" && transmissionStatus) transmissionStatus.textContent = "Dispositivo desconectado";
+                  if (placeholder && value === "connected") placeholder.textContent = "Dispositivo conectado. Aguardando autorização explícita do Android e início da captura.";
+                }
+                if (transport === "webrtc" && transmissionStatus) {
+                  if (value === "connected") transmissionStatus.textContent = "Conexão WebRTC estabelecida";
+                  if (value === "connecting" || value === "new") transmissionStatus.textContent = "Conectando transmissão";
+                  if (value === "failed") transmissionStatus.textContent = "Erro na transmissão";
+                  if (value === "disconnected") transmissionStatus.textContent = "Transmissão desconectada";
+                  if (value === "closed") transmissionStatus.textContent = "Transmissão encerrada";
+                }
                 if (transport === "websocket" && value === "closed") {
                   realtimeConnections.delete(session.id);
                   connect.textContent = "Conectar sinalização";
@@ -218,12 +289,49 @@ async function loadSessions() {
               onStream: (stream) => {
                 const video = document.getElementById(`realtime-${session.id}-video`);
                 const placeholder = document.getElementById(`realtime-${session.id}-placeholder`);
-                if (video) video.srcObject = stream;
-                if (placeholder) placeholder.classList.toggle("hidden", Boolean(stream));
+                const status = document.getElementById(`realtime-${session.id}-status`);
+                if (video) {
+                  video.srcObject = stream;
+                  video.hidden = !stream;
+                }
+                if (placeholder) {
+                  placeholder.classList.toggle("hidden", Boolean(stream));
+                  if (stream) placeholder.textContent = "Transmissão ativa — recebendo frames reais do dispositivo.";
+                  else placeholder.textContent = "Transmissão desconectada. As interações remotas estão desativadas.";
+                }
+                if (status) status.textContent = stream ? "Transmissão ativa" : "Aguardando dispositivo";
               },
               onError: (text) => {
                 const error = document.getElementById(`realtime-${session.id}-error`);
                 if (error) error.textContent = text;
+              },
+              onControlState: (value) => {
+                const status = document.getElementById(`realtime-${session.id}-control-status`);
+                const controls = document.getElementById(`realtime-${session.id}-control-actions`);
+                const video = document.getElementById(`realtime-${session.id}-video`);
+                const available = value === "available" && Boolean(video?.srcObject);
+                video?.classList.toggle("remote-control-active", available);
+                if (status) {
+                  status.textContent = ({
+                    available: "Interações ativas: toques, gestos, navegação e texto em campos editáveis.",
+                    unavailable: "Aguardando acessibilidade do Android e vídeo ativo; não há aprovação adicional.",
+                    closed: "Sessão desconectada; interações desativadas."
+                  })[value] || value;
+                }
+                if (controls) {
+                  controls.classList.toggle("hidden", !available);
+                  controls.querySelectorAll("button, input").forEach((control) => {
+                    control.disabled = !available;
+                  });
+                }
+              },
+              onControlResult: (result) => {
+                const status = document.getElementById(`realtime-${session.id}-control-status`);
+                if (status) {
+                  status.textContent = result.status === "succeeded"
+                    ? "Comando executado pelo Android."
+                    : `Comando não executado (${result.errorCode || "falha"}).`;
+                }
               }
             });
             realtimeConnections.set(session.id, connection);
@@ -271,13 +379,138 @@ async function loadSessions() {
         video.muted = true;
         const placeholder = document.createElement("small");
         placeholder.id = `realtime-${session.id}-placeholder`;
-        placeholder.textContent = "A tela só será exibida quando o aplicativo Android autorizado iniciar a captura com a permissão oficial do sistema. Nenhuma tela está sendo simulada.";
+        placeholder.textContent = "Aguardando dispositivo. Nenhuma tela está sendo simulada.";
+        const controlPanel = document.createElement("section");
+        controlPanel.className = "remote-control-panel";
+        const controlTitle = document.createElement("strong");
+        controlTitle.textContent = "Interações remotas";
+        const controlHelp = document.createElement("small");
+        controlHelp.textContent = "Após o consentimento e a autorização do Android, toque ou arraste na tela e envie texto ao campo selecionado. Campos protegidos por senha são bloqueados.";
+        const controlStatus = document.createElement("p");
+        controlStatus.id = `realtime-${session.id}-control-status`;
+        controlStatus.textContent = "Interações ativadas automaticamente quando o Android confirmar acessibilidade e vídeo ativo.";
+        const controlActions = document.createElement("div");
+        controlActions.id = `realtime-${session.id}-control-actions`;
+        controlActions.className = "actions hidden";
+        for (const [label, action] of [["Voltar", "BACK"], ["Início", "HOME"], ["Recentes", "RECENTS"]]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost";
+          button.disabled = true;
+          button.textContent = label;
+          button.onclick = () => realtimeConnections.get(session.id)?.sendRemoteControlCommand({
+            kind: "global",
+            action
+          });
+          controlActions.append(button);
+        }
+        const textInput = document.createElement("input");
+        textInput.type = "text";
+        textInput.maxLength = 512;
+        textInput.placeholder = "Texto para o campo selecionado";
+        textInput.setAttribute("aria-label", "Texto a digitar no Android");
+        textInput.disabled = true;
+        const sendText = document.createElement("button");
+        sendText.type = "button";
+        sendText.textContent = "Enviar texto";
+        sendText.disabled = true;
+        sendText.onclick = () => {
+          const text = textInput.value;
+          if (!text) return;
+          if (realtimeConnections.get(session.id)?.sendRemoteControlCommand({ kind: "type_text", text })) {
+            textInput.value = "";
+          } else {
+            controlStatus.textContent = "Não foi possível enviar: as interações estão indisponíveis.";
+          }
+        };
+        controlActions.append(textInput, sendText);
+        controlPanel.append(controlTitle, controlHelp, controlStatus, controlActions);
+        let activePointer = null;
+        function normalizedPoint(event) {
+          if (!video.videoWidth || !video.videoHeight) return null;
+          const rect = video.getBoundingClientRect();
+          const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+          const width = video.videoWidth * scale;
+          const height = video.videoHeight * scale;
+          const left = rect.left + (rect.width - width) / 2;
+          const top = rect.top + (rect.height - height) / 2;
+          const x = (event.clientX - left) / width;
+          const y = (event.clientY - top) / height;
+          if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+          return {
+            x: Math.round(x * 10_000),
+            y: Math.round(y * 10_000)
+          };
+        }
+        video.addEventListener("pointerdown", (event) => {
+          if (!event.isPrimary || !video.classList.contains("remote-control-active")) return;
+          const point = normalizedPoint(event);
+          if (!point) return;
+          event.preventDefault();
+          video.setPointerCapture(event.pointerId);
+          activePointer = {
+            pointerId: event.pointerId,
+            start: point,
+            latest: point,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            startedAt: Date.now(),
+            moved: false,
+            longPressSent: false
+          };
+          activePointer.timer = setTimeout(() => {
+            if (!activePointer || activePointer.moved) return;
+            activePointer.longPressSent = true;
+            realtimeConnections.get(session.id)?.sendRemoteControlCommand({
+              kind: "long_press",
+              ...activePointer.start,
+              durationMs: 700
+            });
+          }, 700);
+        });
+        video.addEventListener("pointermove", (event) => {
+          if (!activePointer || activePointer.pointerId !== event.pointerId) return;
+          const point = normalizedPoint(event);
+          if (point) activePointer.latest = point;
+          if (Math.hypot(event.clientX - activePointer.clientX, event.clientY - activePointer.clientY) > 10) {
+            activePointer.moved = true;
+            clearTimeout(activePointer.timer);
+          }
+        });
+        video.addEventListener("pointerup", (event) => {
+          if (!activePointer || activePointer.pointerId !== event.pointerId) return;
+          const pointer = activePointer;
+          activePointer = null;
+          clearTimeout(pointer.timer);
+          if (!video.classList.contains("remote-control-active")) return;
+          if (pointer.longPressSent) return;
+          const point = normalizedPoint(event) || pointer.latest;
+          if (pointer.moved) {
+            realtimeConnections.get(session.id)?.sendRemoteControlCommand({
+              kind: "drag",
+              fromX: pointer.start.x,
+              fromY: pointer.start.y,
+              toX: point.x,
+              toY: point.y,
+              durationMs: Math.max(100, Math.min(1_500, Date.now() - pointer.startedAt))
+            });
+          } else {
+            realtimeConnections.get(session.id)?.sendRemoteControlCommand({
+              kind: "tap",
+              ...pointer.start
+            });
+          }
+        });
+        video.addEventListener("pointercancel", () => {
+          if (activePointer) clearTimeout(activePointer.timer);
+          activePointer = null;
+        });
         const error = document.createElement("p");
         error.id = `realtime-${session.id}-error`;
         error.className = "message";
         error.setAttribute("aria-live", "polite");
         actions.append(connect, ticketButton, copyTicket);
-        panel.append(heading, states, actions, ticketOutput, video, placeholder, error);
+        panel.append(heading, states, transmissionStatus, actions, ticketOutput, video, placeholder, controlPanel, error);
         entry.append(panel);
       } else {
         const existing = realtimeConnections.get(session.id);

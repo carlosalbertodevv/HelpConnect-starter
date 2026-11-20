@@ -27,7 +27,7 @@ Cobertura adicionada:
 - Backend: `npm test` passou (25 testes); `npx prisma validate --schema backend/prisma/schema.prisma` passou.
 - Android: 12 testes unitários passaram; `lintDebug`, `assembleDebug` e `assembleRelease` passaram.
 - Lint Android reportou 0 erros e 10 avisos, incluindo avisos de versão mais recente disponível e `targetSdk` 35. O app usa `compileSdk` 36, mas permanece em `targetSdk` 35 para não ativar mudanças de comportamento do target 36 antes de validá-las em dispositivos.
-- O build local usa `https://api.example.invalid/api` como valor padrão; configure a URL real antes de instalar para testes.
+- O build debug usa `http://10.0.2.2:3001/api` por padrão. Em aparelho físico, configure a URL LAN ou HTTPS.
 
 ## Verificação manual obrigatória
 

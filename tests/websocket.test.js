@@ -7,8 +7,14 @@ import { createSignalingServer } from "../backend/src/websocket/signalingServer.
 
 const operatorId = randomUUID();
 
-function createHarness({ sessionOverrides = {}, sessions: additionalSessions = [] } = {}) {
+function createHarness({
+  sessionOverrides = {},
+  sessions: additionalSessions = [],
+  appOrigins = ["http://localhost:5500", "http://10.0.2.2:5500"]
+} = {}) {
   const sessionId = randomUUID();
+  const sessionLogs = [];
+  const permissions = [];
   const sessions = new Map([
     [sessionId, {
       id: sessionId,
@@ -31,7 +37,18 @@ function createHarness({ sessionOverrides = {}, sessions: additionalSessions = [
         return { count: 1 };
       }
     },
-    sessionLog: { create: async () => ({}) }
+    sessionLog: {
+      create: async ({ data }) => {
+        sessionLogs.push(data);
+        return data;
+      }
+    },
+    sessionPermission: {
+      create: async ({ data }) => {
+        permissions.push(data);
+        return data;
+      }
+    }
   };
   const supabase = {
     auth: {
@@ -45,7 +62,8 @@ function createHarness({ sessionOverrides = {}, sessions: additionalSessions = [
     server,
     prisma,
     supabase,
-    appOrigin: "http://localhost:5500",
+    appOrigin: appOrigins[0],
+    appOrigins,
     getIceServers: () => ({ iceServers: [{ urls: "stun:stun.example.test:3478" }] }),
     consumeTicket(token) {
       const ticket = tickets.get(token);
@@ -59,14 +77,16 @@ function createHarness({ sessionOverrides = {}, sessions: additionalSessions = [
     sessionId,
     sessions,
     tickets,
+    sessionLogs,
+    permissions,
     signaling,
     sockets,
     async start() {
       await ready;
       return `ws://127.0.0.1:${server.address().port}/ws`;
     },
-    async connect(url = `ws://127.0.0.1:${server.address().port}/ws`) {
-      const socket = new WebSocket(url);
+    async connect(url = `ws://127.0.0.1:${server.address().port}/ws`, options = {}) {
+      const socket = new WebSocket(url, options);
       sockets.add(socket);
       await new Promise((resolve, reject) => {
         socket.once("open", resolve);
@@ -141,8 +161,41 @@ async function joinDevice(harness, socket, sessionId = harness.sessionId, token 
   return joined;
 }
 
+async function enableRemoteInteractions(operator, device) {
+  const operatorConnection = waitForMessage(device, "connection_state");
+  sendSignal(operator, {
+    type: "connection_state",
+    sequence: 1,
+    recipient: "device",
+    transport: "webrtc",
+    state: "connected"
+  });
+  await operatorConnection;
+  const deviceConnection = waitForMessage(operator, "connection_state");
+  sendSignal(device, {
+    type: "connection_state",
+    sequence: 1,
+    recipient: "operator",
+    transport: "webrtc",
+    state: "connected"
+  });
+  await deviceConnection;
+  const availability = waitForMessage(operator, "remote_control_state");
+  sendSignal(device, {
+    type: "remote_control_state",
+    sequence: 2,
+    recipient: "operator",
+    available: true
+  });
+  return availability;
+}
+
 function sendSignal(socket, message) {
   socket.send(JSON.stringify({ ...message, connectionNonce: socket.connectionNonce }));
+}
+
+function sendControl(socket, message) {
+  sendSignal(socket, message);
 }
 
 async function withHarness(options, run) {
@@ -161,6 +214,24 @@ test("WebSocket server accepts a valid operator connection", async () => {
     const joined = await joinOperator(harness, socket);
     assert.equal(joined.accepted, true);
     assert.equal(joined.participant, "operator");
+  });
+});
+
+test("WebSocket server accepts the Android emulator browser origin", async () => {
+  await withHarness({}, async (harness) => {
+    const socket = await harness.connect(undefined, {
+      headers: { Origin: "http://10.0.2.2:5500" }
+    });
+    const joined = await joinOperator(harness, socket);
+    assert.equal(joined.accepted, true);
+  });
+});
+
+test("WebSocket server rejects origins outside the configured allowlist", async () => {
+  await withHarness({}, async (harness) => {
+    await assert.rejects(harness.connect(undefined, {
+      headers: { Origin: "http://untrusted.example" }
+    }));
   });
 });
 
@@ -443,5 +514,258 @@ test("oversized messages are rejected by the WebSocket server", async () => {
     const closed = new Promise((resolve) => socket.once("close", (code) => resolve(code)));
     socket.send("x".repeat(17 * 1024));
     assert.equal(await closed, 1009);
+  });
+});
+
+test("remote interactions require Android availability and audit command outcomes", async () => {
+  await withHarness({ sessionOverrides: { status: "ACTIVE" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+    harness.sessions.get(harness.sessionId).status = "ACTIVE";
+
+    const available = await enableRemoteInteractions(operator, device);
+    assert.equal(available.available, true);
+    assert.equal(harness.permissions.length, 0);
+    assert.ok(harness.sessionLogs.some((entry) => entry.event === "REMOTE_CONTROL_ENABLED"));
+
+    const commandId = randomUUID();
+    const command = waitForMessage(device, "remote_control_command");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 2,
+      recipient: "device",
+      commandId,
+      action: { kind: "tap", x: 5_000, y: 4_000 }
+    });
+    assert.equal((await command).commandId, commandId);
+    assert.ok(harness.sessionLogs.some((entry) => entry.event === "REMOTE_CONTROL_COMMAND_TAP"));
+
+    const result = waitForMessage(operator, "remote_control_result");
+    sendControl(device, {
+      type: "remote_control_result",
+      sequence: 3,
+      recipient: "operator",
+      commandId,
+      status: "succeeded"
+    });
+    assert.equal((await result).status, "succeeded");
+    assert.ok(harness.sessionLogs.some((entry) => entry.event === "REMOTE_CONTROL_COMMAND_SUCCEEDED"));
+
+    const textCommandId = randomUUID();
+    const textCommand = waitForMessage(device, "remote_control_command");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 3,
+      recipient: "device",
+      commandId: textCommandId,
+      action: { kind: "type_text", text: "texto de teste" }
+    });
+    assert.equal((await textCommand).action.text, "texto de teste");
+    assert.ok(harness.sessionLogs.some((entry) => entry.event === "REMOTE_CONTROL_COMMAND_TYPE_TEXT"));
+    assert.ok(!harness.sessionLogs.some((entry) => entry.event.includes("texto de teste")));
+  });
+});
+
+test("legacy approval messages are rejected and commands require device availability", async () => {
+  await withHarness({ sessionOverrides: { status: "ACTIVE" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+    harness.sessions.get(harness.sessionId).status = "ACTIVE";
+
+    const obsolete = waitForErrorCode(operator, "INVALID_MESSAGE");
+    sendControl(operator, {
+      type: "remote_control_request",
+      sequence: 1,
+      recipient: "device",
+      requestId: randomUUID()
+    });
+    assert.equal((await obsolete).code, "INVALID_MESSAGE");
+
+    const error = waitForErrorCode(operator, "CONTROL_NOT_AUTHORIZED");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 2,
+      recipient: "device",
+      commandId: randomUUID(),
+      action: { kind: "tap", x: 5_000, y: 5_000 }
+    });
+    assert.equal((await error).code, "CONTROL_NOT_AUTHORIZED");
+
+    const invalid = waitForErrorCode(operator, "INVALID_MESSAGE");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 3,
+      recipient: "device",
+      commandId: randomUUID(),
+      action: { kind: "type_text", text: "x".repeat(513) }
+    });
+    assert.equal((await invalid).code, "INVALID_MESSAGE");
+  });
+});
+
+test("active session and current device availability are required", async () => {
+  await withHarness({ sessionOverrides: { status: "CONSENTED" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+
+    const inactive = waitForErrorCode(device, "CONTROL_SESSION_INACTIVE");
+    sendControl(device, {
+      type: "remote_control_state",
+      sequence: 1,
+      recipient: "operator",
+      available: true
+    });
+    assert.equal((await inactive).code, "CONTROL_SESSION_INACTIVE");
+  });
+
+  await withHarness({ sessionOverrides: { status: "ACTIVE" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+    const available = await enableRemoteInteractions(operator, device);
+    assert.equal(available.available, true);
+
+    const disabled = waitForMessage(operator, "remote_control_state");
+    sendControl(device, {
+      type: "remote_control_state",
+      sequence: 3,
+      recipient: "operator",
+      available: false
+    });
+    assert.equal((await disabled).available, false);
+
+    const error = waitForErrorCode(operator, "CONTROL_NOT_AUTHORIZED");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 2,
+      recipient: "device",
+      commandId: randomUUID(),
+      action: { kind: "global", action: "BACK" }
+    });
+    assert.equal((await error).code, "CONTROL_NOT_AUTHORIZED");
+    assert.ok(harness.sessionLogs.some((entry) => entry.event === "REMOTE_CONTROL_DISABLED"));
+  });
+});
+
+test("remote commands reject duplicate IDs and unmatched results", async () => {
+  await withHarness({ sessionOverrides: { status: "ACTIVE" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+    harness.sessions.get(harness.sessionId).status = "ACTIVE";
+    await enableRemoteInteractions(operator, device);
+
+    const commandId = randomUUID();
+    const command = {
+      type: "remote_control_command",
+      recipient: "device",
+      commandId,
+      action: { kind: "long_press", x: 500, y: 500, durationMs: 1_000 }
+    };
+    const first = waitForMessage(device, "remote_control_command");
+    sendControl(operator, { ...command, sequence: 2 });
+    await first;
+    const duplicateError = waitForErrorCode(operator, "DUPLICATE_COMMAND");
+    sendControl(operator, { ...command, sequence: 3 });
+    assert.equal((await duplicateError).code, "DUPLICATE_COMMAND");
+
+    const resultError = waitForErrorCode(device, "INVALID_CONTROL_RESULT");
+    sendControl(device, {
+      type: "remote_control_result",
+      sequence: 3,
+      recipient: "operator",
+      commandId: randomUUID(),
+      status: "succeeded"
+    });
+    assert.equal((await resultError).code, "INVALID_CONTROL_RESULT");
+  });
+});
+
+test("remote commands enforce participant roles and rate limits; session end closes both peers", async () => {
+  await withHarness({ sessionOverrides: { status: "ACTIVE" } }, async (harness) => {
+    harness.tickets.set("device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: harness.sessionId });
+    const operator = await harness.connect();
+    const device = await harness.connect();
+    await joinOperator(harness, operator);
+    await joinDevice(harness, device);
+    harness.sessions.get(harness.sessionId).status = "ACTIVE";
+
+    await enableRemoteInteractions(operator, device);
+    const wrongRole = waitForErrorCode(device, "CONTROL_FORBIDDEN");
+    sendControl(device, {
+      type: "remote_control_command",
+      sequence: 3,
+      recipient: "device",
+      commandId: randomUUID(),
+      action: { kind: "global", action: "BACK" }
+    });
+    assert.equal((await wrongRole).code, "CONTROL_FORBIDDEN");
+    const obsolete = waitForErrorCode(device, "INVALID_MESSAGE");
+    sendControl(device, { type: "remote_control_revoke", sequence: 4, recipient: "operator" });
+    assert.equal((await obsolete).code, "INVALID_MESSAGE");
+
+    const rateLimited = waitForErrorCode(operator, "RATE_LIMITED");
+    for (let sequence = 2; sequence <= 10; sequence += 1) {
+      sendControl(operator, {
+        type: "remote_control_command",
+        sequence,
+        recipient: "device",
+        commandId: randomUUID(),
+        action: { kind: "tap", x: 5_000, y: 5_000 }
+      });
+    }
+    assert.equal((await rateLimited).code, "RATE_LIMITED");
+
+    const ended = waitForMessage(operator, "session_ended");
+    harness.signaling.terminateSession(harness.sessionId, "operator_ended");
+    await ended;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.permissions.length, 0);
+    assert.ok(!harness.sessionLogs.some((entry) => entry.event.includes("REQUESTED")));
+  });
+});
+
+test("remote commands cannot cross session boundaries", async () => {
+  const otherSessionId = randomUUID();
+  await withHarness({
+    sessionOverrides: { status: "ACTIVE" },
+    sessions: [{
+      id: otherSessionId,
+      operatorId,
+      status: "ACTIVE",
+      expiresAt: new Date(Date.now() + 60_000),
+      permissions: [{ granted: true }]
+    }]
+  }, async (harness) => {
+    harness.tickets.set("other-device-ticket-token-abcdefghijklmnopqrstuvwxyz", { sessionId: otherSessionId });
+    const operator = await harness.connect();
+    const otherDevice = await harness.connect();
+    await joinOperator(harness, operator, harness.sessionId);
+    await joinDevice(harness, otherDevice, otherSessionId, "other-device-ticket-token-abcdefghijklmnopqrstuvwxyz");
+    harness.sessions.get(harness.sessionId).status = "ACTIVE";
+    harness.sessions.get(otherSessionId).status = "ACTIVE";
+
+    const error = waitForErrorCode(operator, "PEER_UNAVAILABLE");
+    sendControl(operator, {
+      type: "remote_control_command",
+      sequence: 1,
+      recipient: "device",
+      commandId: randomUUID(),
+      action: { kind: "global", action: "HOME" }
+    });
+    assert.equal((await error).code, "PEER_UNAVAILABLE");
   });
 });

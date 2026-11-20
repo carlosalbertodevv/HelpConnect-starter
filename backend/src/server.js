@@ -18,7 +18,7 @@ const app = express();
 app.set("trust proxy", config.trustProxy);
 app.use(helmet());
 app.use(cors({
-  origin: [config.appOrigin],
+  origin: config.appOrigins,
   methods: ["GET", "POST", "PATCH", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
@@ -69,6 +69,7 @@ const signalingServer = createSignalingServer({
   prisma,
   supabase,
   appOrigin: config.appOrigin,
+  appOrigins: config.appOrigins,
   requireHttps: config.requireHttps,
   isTrustedProxy: (address) => isTrustedProxy(address, 0),
   getClientAddress: (request) => {
@@ -90,7 +91,7 @@ const signalingServer = createSignalingServer({
 });
 registerSessionTerminator(signalingServer.terminateSession);
 
-server.listen(config.port, () => {
+server.listen(config.port, config.host, () => {
   console.log(`HelpConnect API running on http://localhost:${config.port}`);
 });
 

@@ -29,6 +29,17 @@ export function consumeDeviceTicket(token) {
   return { sessionId: ticket.sessionId };
 }
 
+export function revokeDeviceTickets(sessionId) {
+  let revoked = 0;
+  for (const [hash, entry] of tickets) {
+    if (entry.sessionId === sessionId) {
+      tickets.delete(hash);
+      revoked += 1;
+    }
+  }
+  return revoked;
+}
+
 export function getDeviceTicketSessionId(token, now = Date.now()) {
   const ticket = tickets.get(digest(token));
   if (!ticket || ticket.expiresAt <= now) return null;

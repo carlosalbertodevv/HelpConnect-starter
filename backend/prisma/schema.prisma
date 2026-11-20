@@ -20,6 +20,7 @@ enum RemoteSessionStatus {
 enum SessionPermissionType {
   SUPPORT_SESSION
   SCREEN_SHARING
+  REMOTE_CONTROL
 }
 
 model User {

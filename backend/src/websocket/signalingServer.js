@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { z } from "zod";
 import { findAuthorizedSession } from "../services/sessionAccess.js";
+import { revokeDeviceTickets } from "../services/deviceTickets.js";
 
 const messageLimit = 16 * 1024;
 const messagesPerWindow = 30;
@@ -12,6 +13,7 @@ const sessionCheckMs = 5_000;
 const maxConnections = 500;
 const connectionAttemptsLimit = 30;
 const connectionAttemptsWindowMs = 10 * 60_000;
+const remoteCommandsPerSecond = 8;
 const participants = ["operator", "device"];
 const uuid = z.uuid();
 
@@ -64,11 +66,70 @@ const signalMessage = z.discriminatedUnion("type", [
     recipient: z.enum(participants),
     transport: z.literal("webrtc"),
     state: z.enum(["new", "connecting", "connected", "disconnected", "failed", "closed"])
-  }).strict()
+  }).strict(),
+  z.object({
+    type: z.literal("remote_control_state"),
+    ...sequencedMessage.shape,
+    recipient: z.literal("operator"),
+    available: z.boolean()
+  }).strict(),
+  z.object({
+    type: z.literal("remote_control_command"),
+    ...sequencedMessage.shape,
+    recipient: z.literal("device"),
+    commandId: uuid,
+    action: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("tap"),
+        x: z.number().int().min(0).max(10_000),
+        y: z.number().int().min(0).max(10_000)
+      }).strict(),
+      z.object({
+        kind: z.literal("long_press"),
+        x: z.number().int().min(0).max(10_000),
+        y: z.number().int().min(0).max(10_000),
+        durationMs: z.number().int().min(500).max(2_000)
+      }).strict(),
+      z.object({
+        kind: z.literal("drag"),
+        fromX: z.number().int().min(0).max(10_000),
+        fromY: z.number().int().min(0).max(10_000),
+        toX: z.number().int().min(0).max(10_000),
+        toY: z.number().int().min(0).max(10_000),
+        durationMs: z.number().int().min(100).max(1_500)
+      }).strict(),
+      z.object({
+        kind: z.literal("global"),
+        action: z.enum(["BACK", "HOME", "RECENTS"])
+      }).strict(),
+      z.object({
+        kind: z.literal("type_text"),
+        text: z.string().min(1).max(512)
+      }).strict()
+    ])
+  }).strict(),
+  z.object({
+    type: z.literal("remote_control_result"),
+    ...sequencedMessage.shape,
+    recipient: z.literal("operator"),
+    commandId: uuid,
+    status: z.enum(["succeeded", "failed"]),
+    errorCode: z.enum([
+      "accessibility_disabled",
+      "sensitive_field_blocked",
+      "text_field_unavailable",
+      "gesture_rejected",
+      "action_unsupported",
+      "command_cancelled"
+    ]).optional()
+  }).strict().refine(
+    (message) => (message.status === "failed") === Boolean(message.errorCode),
+    "A failed command requires a bounded error code."
+  )
 ]);
 
 function safeSend(socket, message) {
-  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
 }
 
 function rejectUpgrade(socket, status, message) {
@@ -81,6 +142,7 @@ export function createSignalingServer({
   prisma,
   supabase,
   appOrigin,
+  appOrigins,
   requireHttps = false,
   isTrustedProxy = () => false,
   getClientAddress = (request) => request.socket.remoteAddress || "unknown",
@@ -92,6 +154,7 @@ export function createSignalingServer({
     throw new TypeError("Signaling server dependencies are required.");
   }
 
+  const allowedOrigins = new Set(appOrigins ?? [appOrigin].filter(Boolean));
   const wss = new WebSocketServer({ noServer: true, maxPayload: messageLimit });
   const sessions = new Map();
   const monitors = new Map();
@@ -136,6 +199,14 @@ export function createSignalingServer({
   function terminateSession(sessionId, reason = "session_unavailable") {
     const session = sessions.get(sessionId);
     if (!session) return;
+    const device = session.get("device");
+    if (device?.remoteControlReady) {
+      device.remoteControlReady = false;
+      device.pendingRemoteCommands.clear();
+      void prisma.sessionLog.create({
+        data: { sessionId, event: "REMOTE_CONTROL_DISABLED", actorId: "system" }
+      }).catch((error) => console.error("Could not persist remote interaction state.", error));
+    }
     for (const socket of session.values()) {
       safeSend(socket, { type: "session_ended", sessionId, reason });
       socket.close(4000, "Session ended");
@@ -192,6 +263,7 @@ export function createSignalingServer({
     } catch (error) {
       console.error("Could not persist expired signaling session.");
     }
+    revokeDeviceTickets(sessionId);
     terminateSession(sessionId, "expired");
   }
 
@@ -212,15 +284,47 @@ export function createSignalingServer({
     });
   }
 
-  function register(socket, sessionId, participant, iceServers) {
+  function register(socket, sessionId, participant, iceServers, operatorId) {
     const session = getParticipants(sessionId);
     const existing = session.get(participant);
     if (existing && existing !== socket) {
+      const wasAvailable = existing.remoteControlReady === true ||
+        (participant === "operator" && session.get("device")?.remoteControlReady === true);
+      existing.remoteControlReady = false;
+      existing.pendingRemoteCommands?.clear();
+      const device = participant === "device" ? null : session.get("device");
+      if (device) {
+        device.remoteControlReady = false;
+        device.pendingRemoteCommands?.clear();
+        safeSend(device, {
+          type: "remote_control_state",
+          sessionId,
+          available: false,
+          sender: "server"
+        });
+      } else if (wasAvailable) {
+        safeSend(session.get("operator"), {
+          type: "remote_control_state",
+          sessionId,
+          available: false,
+          sender: "server"
+        });
+      }
+      if (wasAvailable) {
+        void prisma.sessionLog.create({
+          data: { sessionId, event: "REMOTE_CONTROL_DISABLED", actorId: "system" }
+        }).catch((error) => console.error("Could not persist remote interaction state.", error));
+      }
       safeSend(existing, { type: "error", code: "REPLACED", message: "Uma conexão mais recente substituiu esta conexão." });
       existing.close(4001, "Connection replaced");
     }
     socket.sessionId = sessionId;
     socket.participant = participant;
+    socket.operatorId = operatorId || null;
+    socket.webrtcConnected = false;
+    socket.remoteControlReady = false;
+    socket.pendingRemoteCommands = new Map();
+    socket.seenRemoteCommandIds = new Set();
     socket.lastSequence = signalSequences.get(`${sessionId}:${participant}`) || 0;
     socket.connectionNonce = randomBytes(16).toString("base64url");
     session.set(participant, socket);
@@ -243,6 +347,10 @@ export function createSignalingServer({
         participant: peerParticipant,
         state: "connected"
       });
+      void prisma.remoteSession.updateMany({
+        where: { id: sessionId, status: { in: ["CONSENTED", "CONNECTING"] } },
+        data: { status: "CONNECTING", startedAt: new Date() }
+      }).catch(() => console.error("Could not persist signaling connection state."));
     }
     notifyPeer(socket, "connected");
     void Promise.resolve(onConnection({ sessionId, participant, event: "joined" }))
@@ -291,16 +399,10 @@ export function createSignalingServer({
       return;
     }
     const iceServers = participant === "device" ? getIceServers(sessionId) : null;
-    register(socket, sessionId, participant, iceServers);
+    register(socket, sessionId, participant, iceServers, operatorId);
   }
 
   async function handleMessage(socket, buffer) {
-    socket.messageCount += 1;
-    if (socket.messageCount > messagesPerWindow) {
-      safeSend(socket, { type: "error", code: "RATE_LIMITED", message: "Limite de mensagens excedido." });
-      socket.close(4408, "Rate limited");
-      return;
-    }
     let message;
     try {
       message = JSON.parse(buffer.toString());
@@ -308,6 +410,25 @@ export function createSignalingServer({
       safeSend(socket, { type: "error", code: "INVALID_JSON", message: "Mensagem JSON inválida." });
       socket.close(4400, "Invalid JSON");
       return;
+    }
+    if (message?.type === "remote_control_command") {
+      const now = Date.now();
+      if (now - socket.remoteCommandWindowStartedAt >= 1_000) {
+        socket.remoteCommandWindowStartedAt = now;
+        socket.remoteCommandCount = 0;
+      }
+      socket.remoteCommandCount += 1;
+      if (socket.remoteCommandCount > remoteCommandsPerSecond) {
+        safeSend(socket, { type: "error", code: "RATE_LIMITED", message: "Limite de comandos de controle excedido." });
+        return;
+      }
+    } else {
+      socket.messageCount += 1;
+      if (socket.messageCount > messagesPerWindow) {
+        safeSend(socket, { type: "error", code: "RATE_LIMITED", message: "Limite de mensagens excedido." });
+        socket.close(4408, "Rate limited");
+        return;
+      }
     }
     if (!socket.participant) {
       await handleJoin(socket, message);
@@ -329,13 +450,44 @@ export function createSignalingServer({
       return;
     }
 
-    const session = await findAuthorizedSession(prisma, socket.sessionId);
+    const session = await findAuthorizedSession(prisma, socket.sessionId, socket.operatorId);
     if (!session) {
       terminateSession(socket.sessionId, "session_unavailable");
       return;
     }
     socket.lastSequence = signal.sequence;
     signalSequences.set(`${socket.sessionId}:${socket.participant}`, signal.sequence);
+    if (signal.type.startsWith("remote_control_")) {
+      await handleRemoteControlMessage(socket, signal, session);
+      return;
+    }
+    if (signal.type === "connection_state" && signal.transport === "webrtc" && signal.state === "connected") {
+      socket.webrtcConnected = true;
+      try {
+        await prisma.remoteSession.updateMany({
+          where: { id: socket.sessionId, status: { in: ["CONSENTED", "CONNECTING"] } },
+          data: { status: "ACTIVE" }
+        });
+      } catch (error) {
+        console.error("Could not persist active WebRTC state.", error);
+      }
+    } else if (signal.type === "connection_state" && signal.transport === "webrtc") {
+      socket.webrtcConnected = false;
+      const device = sessions.get(socket.sessionId)?.get("device");
+      if (device?.remoteControlReady) {
+        device.remoteControlReady = false;
+        device.pendingRemoteCommands.clear();
+        safeSend(sessions.get(socket.sessionId)?.get("operator"), {
+          type: "remote_control_state",
+          sessionId: socket.sessionId,
+          available: false,
+          sender: "server"
+        });
+        void prisma.sessionLog.create({
+          data: { sessionId: socket.sessionId, event: "REMOTE_CONTROL_DISABLED", actorId: "system" }
+        }).catch((error) => console.error("Could not persist remote interaction state.", error));
+      }
+    }
     if (signal.type === "leave_session") {
       safeSend(socket, { type: "leave_session", sessionId: socket.sessionId, accepted: true });
       socket.close(1000, "Participant left");
@@ -359,9 +511,164 @@ export function createSignalingServer({
     });
   }
 
+  async function handleRemoteControlMessage(socket, signal, session) {
+    const sessionId = socket.sessionId;
+    const isCurrentParticipant = sessions.get(sessionId)?.get(socket.participant) === socket;
+    const peerParticipant = socket.participant === "operator" ? "device" : "operator";
+    const peer = sessions.get(sessionId)?.get(peerParticipant);
+    const reject = (code, message) => safeSend(socket, { type: "error", code, message });
+
+    if (!isCurrentParticipant || !peer || peer.readyState !== WebSocket.OPEN) {
+      reject("PEER_UNAVAILABLE", "O outro participante não está conectado.");
+      return;
+    }
+    const requiredSender = {
+      remote_control_state: "device",
+      remote_control_command: "operator",
+      remote_control_result: "device"
+    }[signal.type];
+    if (requiredSender && socket.participant !== requiredSender) {
+      reject("CONTROL_FORBIDDEN", "Este participante não pode enviar esta mensagem de controle.");
+      return;
+    }
+    const expectedRecipient = socket.participant === "operator" ? "device" : "operator";
+    if (signal.recipient !== expectedRecipient) {
+      reject("INVALID_RECIPIENT", "Destinatário de controle não autorizado.");
+      return;
+    }
+    if (session.status !== "ACTIVE") {
+      reject("CONTROL_SESSION_INACTIVE", "As interações exigem consentimento e sessão ativa.");
+      return;
+    }
+
+    if (signal.type === "remote_control_state") {
+      if (socket.participant !== "device" || !socket.webrtcConnected || !peer.webrtcConnected) {
+        if (signal.available) {
+          reject("CONTROL_NOT_AUTHORIZED", "O Android e a conexão WebRTC ainda não estão prontos.");
+          return;
+        }
+      }
+      if (socket.remoteControlReady === signal.available) return;
+      socket.remoteControlReady = signal.available;
+      if (!signal.available) socket.pendingRemoteCommands.clear();
+      try {
+        await prisma.sessionLog.create({
+          data: {
+            sessionId,
+            event: signal.available ? "REMOTE_CONTROL_ENABLED" : "REMOTE_CONTROL_DISABLED",
+            actorId: "device"
+          }
+        });
+      } catch (error) {
+        socket.remoteControlReady = false;
+        console.error("Could not persist remote interaction state.", error);
+        reject("CONTROL_AUDIT_FAILED", "Não foi possível registrar a disponibilidade de interações.");
+        return;
+      }
+      if (
+        sessions.get(sessionId)?.get("device") === socket &&
+        socket.remoteControlReady &&
+        session.status === "ACTIVE"
+      ) {
+        safeSend(peer, { ...signal, sessionId, sender: "device" });
+      } else {
+        safeSend(peer, {
+          type: "remote_control_state",
+          sessionId,
+          available: false,
+          sender: "server"
+        });
+      }
+      return;
+    }
+
+    const device = sessions.get(sessionId)?.get("device");
+    if (
+      !device ||
+      !device.webrtcConnected ||
+      !socket.webrtcConnected ||
+      !device.remoteControlReady ||
+      (socket.participant === "operator" && session.operatorId !== socket.operatorId)
+    ) {
+      reject("CONTROL_NOT_AUTHORIZED", "As interações não estão disponíveis nesta sessão.");
+      return;
+    }
+
+    if (signal.type === "remote_control_command") {
+      if (socket.participant !== "operator") {
+        reject("CONTROL_FORBIDDEN", "Somente o atendente autenticado pode enviar comandos.");
+        return;
+      }
+      if (socket.seenRemoteCommandIds.has(signal.commandId)) {
+        reject("DUPLICATE_COMMAND", "O comando já foi processado.");
+        return;
+      }
+      if (socket.seenRemoteCommandIds.size >= 2_000 || device.pendingRemoteCommands.size >= 64) {
+        reject("CONTROL_COMMAND_LIMIT", "O limite de comandos desta autorização foi atingido.");
+        return;
+      }
+      try {
+        await prisma.sessionLog.create({
+          data: { sessionId, event: `REMOTE_CONTROL_COMMAND_${signal.action.kind.toUpperCase()}`, actorId: session.operatorId }
+        });
+      } catch (error) {
+        console.error("Could not persist remote-control command.", error);
+        reject("CONTROL_AUDIT_FAILED", "Não foi possível registrar o comando.");
+        return;
+      }
+      if (
+        !device.remoteControlReady ||
+        sessions.get(sessionId)?.get("operator") !== socket ||
+        sessions.get(sessionId)?.get("device") !== device ||
+        session.operatorId !== socket.operatorId
+      ) {
+        reject("CONTROL_NOT_AUTHORIZED", "A autorização foi revogada antes do envio.");
+        return;
+      }
+      socket.seenRemoteCommandIds.add(signal.commandId);
+      device.pendingRemoteCommands.set(signal.commandId, true);
+      safeSend(device, { ...signal, sessionId, sender: socket.participant });
+      return;
+    }
+
+    if (signal.type === "remote_control_result") {
+      if (
+        socket.participant !== "device" ||
+        !socket.pendingRemoteCommands.has(signal.commandId)
+      ) {
+        reject("INVALID_CONTROL_RESULT", "Resultado de controle não corresponde a um comando ativo.");
+        return;
+      }
+      socket.pendingRemoteCommands.delete(signal.commandId);
+      try {
+        await prisma.sessionLog.create({
+          data: {
+            sessionId,
+            event: signal.status === "succeeded"
+              ? "REMOTE_CONTROL_COMMAND_SUCCEEDED"
+              : `REMOTE_CONTROL_COMMAND_FAILED_${signal.errorCode.toUpperCase()}`,
+            actorId: "device"
+          }
+        });
+      } catch (error) {
+        console.error("Could not persist remote-control result.", error);
+      }
+      if (
+        socket.remoteControlReady &&
+        sessions.get(sessionId)?.get("operator") === peer &&
+        session.operatorId === peer.operatorId
+      ) {
+        safeSend(peer, { ...signal, sessionId, sender: socket.participant });
+      }
+    }
+  }
+
   function handleConnection(socket) {
     socket.isAlive = true;
     socket.messageCount = 0;
+    socket.messageQueue = Promise.resolve();
+    socket.remoteCommandCount = 0;
+    socket.remoteCommandWindowStartedAt = Date.now();
     socket.windowStartedAt = Date.now();
     socket.authenticating = false;
     const authTimer = setTimeout(() => {
@@ -384,8 +691,8 @@ export function createSignalingServer({
         return;
       }
       if (!socket.participant) socket.authenticating = true;
-      void handleMessage(socket, data).catch((error) => {
-        console.error("WebSocket message processing failed.");
+      socket.messageQueue = socket.messageQueue.then(() => handleMessage(socket, data)).catch((error) => {
+        console.error("WebSocket message processing failed.", error);
         safeSend(socket, { type: "error", code: "INTERNAL_ERROR", message: "Não foi possível processar a mensagem." });
         socket.close(1011, "Message processing failed");
       });
@@ -396,6 +703,27 @@ export function createSignalingServer({
       if (!socket.sessionId) return;
       const session = sessions.get(socket.sessionId);
       if (session?.get(socket.participant) === socket) {
+        const device = session.get("device");
+        const wasRemoteControlReady = device?.remoteControlReady === true;
+        if (device) {
+          device.remoteControlReady = false;
+          device.pendingRemoteCommands.clear();
+          safeSend(session.get("operator"), {
+            type: "remote_control_state",
+            sessionId: socket.sessionId,
+            available: false,
+            sender: "server"
+          });
+        }
+        if (wasRemoteControlReady) {
+          void prisma.sessionLog.create({
+            data: {
+              sessionId: socket.sessionId,
+              event: "REMOTE_CONTROL_DISABLED",
+              actorId: socket.participant === "operator" ? socket.operatorId : "device"
+            }
+          }).catch((error) => console.error("Could not persist remote interaction state.", error));
+        }
         session.delete(socket.participant);
         notifyPeer(socket, "disconnected");
         void Promise.resolve(onConnection({
@@ -441,7 +769,7 @@ export function createSignalingServer({
       return;
     }
     const origin = request.headers.origin;
-    if (origin && origin !== appOrigin) {
+    if (origin && !allowedOrigins.has(origin)) {
       rejectUpgrade(socket, 403, "Forbidden");
       return;
     }

@@ -1,7 +1,6 @@
 package com.helpconnect.android.presentation
 
 import android.Manifest
-import android.app.Activity
 import android.media.projection.MediaProjectionManager
 import android.content.ComponentName
 import android.content.Context
@@ -16,9 +15,9 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.textfield.TextInputEditText
@@ -37,17 +36,23 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
     private lateinit var ticketInput: TextInputEditText
     private lateinit var statusText: TextView
     private lateinit var errorText: TextView
-    private lateinit var connectionCard: MaterialCardView
-    private lateinit var sharingCard: MaterialCardView
+    private lateinit var sessionCard: MaterialCardView
     private lateinit var endedCard: MaterialCardView
     private lateinit var homeCard: MaterialCardView
-    private lateinit var connectionCodeText: TextView
-    private lateinit var connectionStepText: TextView
+    private lateinit var sessionForm: LinearLayout
+    private lateinit var startSessionButton: MaterialButton
+    private lateinit var sessionCodeText: TextView
+    private lateinit var sessionStatusText: TextView
+    private lateinit var sharingConsentText: TextView
+    private lateinit var remoteInteractionHelpText: TextView
     private lateinit var webrtcStateText: TextView
-    private lateinit var sharingStatusText: TextView
+    private lateinit var remoteInteractionStatusText: TextView
     private lateinit var endedStatusText: TextView
     private lateinit var startSharingButton: MaterialButton
+    private lateinit var stopSharingButton: MaterialButton
+    private lateinit var accessibilitySettingsButton: MaterialButton
     private var currentState = SessionUiState()
+    private var showingSessionForm = false
 
     private val projectionRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val grant = ProjectionConsent.accept(result.resultCode, result.data)
@@ -69,6 +74,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
             val localBinder = binder as? HelpConnectService.LocalBinder ?: return
             service = localBinder.service().also { it.setStateListener(this@MainActivity) }
             onStateChanged(service?.currentState() ?: SessionUiState())
+            service?.refreshAccessibilityStatus()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -93,6 +99,11 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         if (bound) unbindService(serviceConnection)
         bound = false
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        service?.refreshAccessibilityStatus()
     }
 
     override fun onStateChanged(state: SessionUiState) {
@@ -121,28 +132,38 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         }, matchWidth())
 
         val homeColumn = cardColumn()
-        homeColumn.addView(TextView(this).apply {
+        startSessionButton = MaterialButton(this).apply {
             text = getString(R.string.start_session_title)
-            textSize = 20f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }, matchWidth())
-        homeColumn.addView(TextView(this).apply {
+            setOnClickListener {
+                showingSessionForm = true
+                render(currentState)
+            }
+        }
+        homeColumn.addView(startSessionButton, matchWidth())
+
+        sessionForm = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        sessionForm.addView(TextView(this).apply {
             text = getString(R.string.session_input_help)
             textSize = 14f
-            setPadding(0, dp(8), 0, dp(16))
+            setPadding(0, 0, 0, dp(16))
         }, matchWidth())
-        codeInput = textInput(
+        val (codeLayout, codeEditText) = textInput(
             getString(R.string.session_code_hint),
             getString(R.string.session_code_placeholder),
             false
         )
-        homeColumn.addView((codeInput.parent as View), matchWidth())
-        ticketInput = textInput(
+        codeInput = codeEditText
+        sessionForm.addView(codeLayout, matchWidth())
+        val (ticketLayout, ticketEditText) = textInput(
             getString(R.string.device_ticket_hint),
             getString(R.string.device_ticket_placeholder),
             true
         )
-        homeColumn.addView((ticketInput.parent as View), margins(top = 12))
+        ticketInput = ticketEditText
+        sessionForm.addView(ticketLayout, margins(top = 12))
         val connectButton = MaterialButton(this).apply {
             text = getString(R.string.validate_and_connect)
             setOnClickListener {
@@ -153,79 +174,79 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
                     showError("A configuração de produção exige uma URL HTTPS.")
                     return@setOnClickListener
                 }
-                if (BuildConfig.API_BASE_URL.contains("example.invalid")) {
-                    showError("Configure helpconnectApiBaseUrl antes de conectar.")
-                    return@setOnClickListener
-                }
                 service?.connect(code, ticket) ?: showError("O serviço do aplicativo ainda está iniciando.")
                 ticketInput.text?.clear()
             }
         }
-        homeColumn.addView(connectButton, margins(top = 12))
+        sessionForm.addView(connectButton, margins(top = 12))
         statusText = TextView(this).apply {
             textSize = 14f
             setPadding(0, dp(12), 0, 0)
         }
-        homeColumn.addView(statusText, matchWidth())
+        sessionForm.addView(statusText, matchWidth())
         errorText = TextView(this).apply {
             textSize = 14f
             setTextColor(0xFFB42318.toInt())
             setPadding(0, dp(8), 0, 0)
             visibility = View.GONE
         }
-        homeColumn.addView(errorText, matchWidth())
+        sessionForm.addView(errorText, matchWidth())
+        homeColumn.addView(sessionForm, margins(top = 16))
         homeCard = card(homeColumn)
         column.addView(homeCard, margins(bottom = 16))
 
-        val connectionColumn = cardColumn()
-        connectionColumn.addView(TextView(this).apply {
-            text = getString(R.string.secure_connection)
-            textSize = 20f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }, matchWidth())
-        connectionCodeText = TextView(this).apply {
+        val sessionColumn = cardColumn()
+        sessionCodeText = TextView(this).apply {
             textSize = 16f
-            setPadding(0, dp(12), 0, dp(4))
+            setPadding(0, 0, 0, dp(8))
         }
-        connectionStepText = TextView(this).apply {
+        sessionStatusText = TextView(this).apply {
             textSize = 14f
         }
-        connectionColumn.addView(connectionCodeText, matchWidth())
-        connectionColumn.addView(connectionStepText, margins(bottom = 12))
+        sessionColumn.addView(sessionCodeText, matchWidth())
+        sessionColumn.addView(sessionStatusText, margins(bottom = 12))
+        sharingConsentText = TextView(this).apply {
+            text = getString(R.string.screen_sharing_consent_help)
+            textSize = 14f
+            setPadding(0, 0, 0, dp(12))
+        }
+        sessionColumn.addView(sharingConsentText, matchWidth())
+        remoteInteractionHelpText = TextView(this).apply {
+            text = getString(R.string.remote_interaction_help)
+            textSize = 14f
+            setPadding(0, 0, 0, dp(12))
+        }
+        sessionColumn.addView(remoteInteractionHelpText, matchWidth())
+        remoteInteractionStatusText = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 0, 0, dp(12))
+        }
+        sessionColumn.addView(remoteInteractionStatusText, matchWidth())
+        accessibilitySettingsButton = MaterialButton(this).apply {
+            text = "Configurar acessibilidade"
+            setOnClickListener {
+                service?.showStatus("Ative HelpConnect manualmente nas Configurações de acessibilidade.")
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+        sessionColumn.addView(accessibilitySettingsButton, margins(bottom = 8))
         startSharingButton = MaterialButton(this).apply {
             text = getString(R.string.allow_screen_sharing)
             setOnClickListener { requestNotificationPermissionOrProjection() }
         }
-        connectionColumn.addView(startSharingButton, margins(bottom = 8))
-        connectionColumn.addView(MaterialButton(this).apply {
-            text = getString(R.string.cancel_connection)
-            setOnClickListener { service?.cancelSession() }
-        }, matchWidth())
-        connectionCard = card(connectionColumn).also { it.visibility = View.GONE }
-        column.addView(connectionCard, margins(bottom = 16))
-
-        val sharingColumn = cardColumn()
-        sharingColumn.addView(TextView(this).apply {
-            text = getString(R.string.screen_sharing_title)
-            textSize = 20f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }, matchWidth())
-        sharingStatusText = TextView(this).apply {
+        sessionColumn.addView(startSharingButton, margins(bottom = 8))
+        webrtcStateText = TextView(this).apply {
             textSize = 14f
-            setPadding(0, dp(8), 0, dp(12))
+            setPadding(0, 0, 0, dp(12))
         }
-        sharingColumn.addView(sharingStatusText, matchWidth())
-        webrtcStateText = TextView(this).apply { textSize = 14f }
-        sharingColumn.addView(webrtcStateText, margins(bottom = 12))
-        val stopSharingButton = MaterialButton(this).apply {
+        sessionColumn.addView(webrtcStateText, matchWidth())
+        stopSharingButton = MaterialButton(this).apply {
             text = getString(R.string.stop_screen_sharing)
-            setOnClickListener {
-                service?.stopScreenShare()
-            }
+            setOnClickListener { service?.stopScreenShare() }
         }
-        sharingColumn.addView(stopSharingButton, matchWidth())
-        sharingCard = card(sharingColumn).also { it.visibility = View.GONE }
-        column.addView(sharingCard, margins(bottom = 16))
+        sessionColumn.addView(stopSharingButton, margins(bottom = 8))
+        sessionCard = card(sessionColumn).also { it.visibility = View.GONE }
+        column.addView(sessionCard, margins(bottom = 16))
 
         val endedColumn = cardColumn()
         endedColumn.addView(TextView(this).apply {
@@ -244,6 +265,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
                 codeInput.text?.clear()
                 ticketInput.text?.clear()
                 service?.reset()
+                showingSessionForm = false
                 render(SessionUiState())
             }
         }, matchWidth())
@@ -252,7 +274,11 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         return scroll
     }
 
-    private fun textInput(hint: String, placeholder: String, isTicket: Boolean): TextInputEditText {
+    private fun textInput(
+        hint: String,
+        placeholder: String,
+        isTicket: Boolean
+    ): Pair<TextInputLayout, TextInputEditText> {
         val layout = TextInputLayout(this).apply { this.hint = hint }
         val input = TextInputEditText(this).apply {
             this.hint = placeholder
@@ -265,7 +291,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
             }
         }
         layout.addView(input)
-        return input
+        return layout to input
     }
 
     private fun requestNotificationPermissionOrProjection() {
@@ -286,15 +312,14 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
     private fun render(state: SessionUiState) {
         if (!::statusText.isInitialized) return
         statusText.text = state.status
-        connectionCodeText.text = getString(R.string.session_code_format, state.publicCode)
-        connectionStepText.text = listOfNotNull(state.status, state.error).joinToString("\n")
-        sharingStatusText.text = state.status
+        sessionCodeText.text = getString(R.string.session_code_format, state.publicCode)
+        sessionStatusText.text = listOfNotNull(state.status, state.error).joinToString("\n")
+        remoteInteractionStatusText.text = state.remoteInteractionStatus
         endedStatusText.text = listOfNotNull(
             state.status,
             state.error,
             "A transmissão foi interrompida."
         ).filter(String::isNotBlank).distinct().joinToString("\n\n")
-        webrtcStateText.text = getString(R.string.webrtc_state_format, state.webrtcState)
         if (state.error.isNullOrBlank()) {
             errorText.visibility = View.GONE
         } else {
@@ -302,10 +327,26 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
             errorText.visibility = View.VISIBLE
         }
         homeCard.visibility = if (state.screen == SessionScreen.HOME) View.VISIBLE else View.GONE
-        connectionCard.visibility = if (state.screen == SessionScreen.CONNECTING || state.screen == SessionScreen.CONNECTED) View.VISIBLE else View.GONE
-        sharingCard.visibility = if (state.screen == SessionScreen.SHARING) View.VISIBLE else View.GONE
+        startSessionButton.visibility =
+            if (state.screen == SessionScreen.HOME && !showingSessionForm) View.VISIBLE else View.GONE
+        sessionForm.visibility =
+            if (state.screen == SessionScreen.HOME && showingSessionForm) View.VISIBLE else View.GONE
+        val activeSession = state.screen == SessionScreen.CONNECTING ||
+            state.screen == SessionScreen.CONNECTED ||
+            state.screen == SessionScreen.SHARING
+        sessionCard.visibility = if (activeSession) View.VISIBLE else View.GONE
+        val consentVisible = state.screen == SessionScreen.CONNECTED || state.screen == SessionScreen.SHARING
+        sharingConsentText.visibility = if (consentVisible) View.VISIBLE else View.GONE
+        remoteInteractionHelpText.visibility = if (consentVisible) View.VISIBLE else View.GONE
+        remoteInteractionStatusText.visibility = if (consentVisible) View.VISIBLE else View.GONE
+        accessibilitySettingsButton.visibility =
+            if (consentVisible && !state.accessibilityEnabled) View.VISIBLE else View.GONE
+        startSharingButton.visibility = if (state.screen == SessionScreen.CONNECTED) View.VISIBLE else View.GONE
         endedCard.visibility = if (state.screen == SessionScreen.ENDED) View.VISIBLE else View.GONE
         startSharingButton.isEnabled = state.screen == SessionScreen.CONNECTED && state.canShare
+        webrtcStateText.text = getString(R.string.webrtc_state_format, state.webrtcState)
+        webrtcStateText.visibility = if (state.screen == SessionScreen.SHARING) View.VISIBLE else View.GONE
+        stopSharingButton.visibility = if (state.screen == SessionScreen.SHARING) View.VISIBLE else View.GONE
     }
 
     private fun showError(message: String) {

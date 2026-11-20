@@ -4,6 +4,7 @@ import { prisma } from "../db.js";
 import { hashToken } from "../utils/tokens.js";
 import { resolveDeviceTicketSession } from "../services/deviceTicketSessions.js";
 import { terminateSessionConnections } from "../websocket/sessionRegistry.js";
+import { revokeDeviceTickets } from "../services/deviceTickets.js";
 
 const router = Router();
 const tokenSchema = z.string().min(30).max(100);
@@ -57,7 +58,10 @@ async function findValidSession(rawToken) {
         });
       }
     });
-    if (expired) terminateSessionConnections(session.id, "expired");
+    if (expired) {
+      revokeDeviceTickets(session.id);
+      terminateSessionConnections(session.id, "expired");
+    }
     return null;
   }
   return session;
@@ -121,7 +125,7 @@ router.post("/consent", async (req, res, next) => {
     if (!updated) return res.status(404).json({ error: "Sessão indisponível." });
     res.json({
       ok: true,
-      message: "Consentimento registrado. O compartilhamento de tela só poderá começar no aplicativo Android, após as permissões do sistema."
+      message: "Consentimento registrado para compartilhamento de tela e interações remotas. A captura ainda exige sua autorização no Android; as interações dependem da ativação manual da acessibilidade."
     });
   } catch (error) {
     next(error);
@@ -200,6 +204,7 @@ router.post("/revoke", async (req, res, next) => {
       return true;
     });
     if (!revoked) return res.status(404).json({ error: "Sessão indisponível para revogação." });
+    revokeDeviceTickets(session.id);
     terminateSessionConnections(session.id, "consent_revoked");
     res.json({ ok: true, message: "Consentimento revogado. A comunicação foi encerrada." });
   } catch (error) {

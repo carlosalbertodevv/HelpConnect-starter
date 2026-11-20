@@ -2,7 +2,7 @@
 
 ## Escopo e estado
 
-O projeto `android/` implementa um cliente Kotlin para compartilhar a tela do cliente com o painel. A transmissão só começa após duas autorizações independentes: consentimento HelpConnect registrado no servidor e aprovação explícita do diálogo oficial `MediaProjection`. Não há controle remoto, root, captura oculta, acessibilidade, instalação silenciosa ou coleta de identificadores permanentes.
+O projeto `android/` implementa um cliente Kotlin para compartilhar a tela e, após o consentimento da sessão, executar interações remotas suportadas pelo Android. A captura exige consentimento HelpConnect e aprovação explícita do diálogo oficial `MediaProjection`; as interações também exigem a habilitação manual do AccessibilityService. Não há root, captura oculta, instalação silenciosa ou coleta de identificadores permanentes.
 
 O código e os testes automatizados estão presentes, mas a Fase 3 **não está validada ponta a ponta**: este workspace não tem um dispositivo Android conectado e a mídia real deve ser confirmada com dispositivo físico e painel.
 
@@ -12,16 +12,17 @@ O código e os testes automatizados estão presentes, mas a Fase 3 **não está 
 2. Após o consentimento web, o atendente gera `POST /api/sessions/:id/device-ticket`. O painel mostra o ticket temporário de uso único. O atendente transfere código e ticket ao cliente por canal seguro; o ticket não é um segredo permanente.
 3. O cliente informa código e ticket no app. `POST /api/public/sessions/device-session` retorna o UUID somente quando o ticket temporário ainda está na memória do backend, pertence ao código e a sessão segue ativa, não expirada e consentida. A consulta não consome o ticket.
 4. O app abre `wss://<host>/ws` e envia o formato existente `join_session` com `{ sessionId, deviceToken }`. O servidor consome o ticket no handshake, revalida sessão/consentimento e retorna nonce, próxima sequência e servidores ICE temporários.
-5. O app espera o atendente entrar na mesma sessão. Só então permite solicitar captura.
+5. O app espera o atendente entrar na mesma sessão. Só então permite iniciar a captura.
 6. O cliente aceita o diálogo oficial do Android; o serviço sobe em foreground com notificação permanente, cria a track de tela, envia Offer/ICE e responde a Offers de renegociação do painel.
-7. Cancelamento, revogação/encerramento, falha ou desconexão encerram captura e recursos WebRTC. O ticket não é reutilizado; o atendente emite outro para uma nova tentativa.
+7. Com acessibilidade habilitada e WebRTC ativo, o painel pode executar gestos, navegação e texto em campos editáveis sem uma segunda solicitação de controle.
+8. Cancelamento, revogação/encerramento, falha ou desconexão encerram captura e recursos WebRTC. O ticket não é reutilizado; o atendente emite outro para uma nova tentativa.
 
 ### Ajustes necessários no backend
 
 - Adicionado `POST /api/public/sessions/device-session`, protegido pelo ticket aleatório de 32 bytes e pelo limitador já aplicado às rotas públicas. A resposta contém somente `sessionId` e `expiresAt`; não retorna nem armazena novamente a credencial.
 - A consulta de resolução não consome o ticket. A função existente de consumo único continua sendo chamada pelo handshake WebSocket, que permanece inalterado.
 - Ao entrar o segundo participante, o servidor envia a ambos um `connection_state` WebSocket informando a presença do peer. Isso permite aguardar o atendente antes de abrir o diálogo de captura.
-- Nenhuma tabela, migration, autenticação do atendente ou formato de SDP/ICE foi alterado.
+- Nenhuma migration histórica, autenticação do atendente ou formato de SDP/ICE foi removido.
 
 O código `HC-...` não autoriza acesso. O ticket é um bearer secret efêmero; o cliente deve recebê-lo por canal seguro. A identidade do app é limitada à participação de dispositivo daquela sessão e daquele ticket. O aplicativo não coleta IMEI, serial, MAC, Android ID nem mantém credencial permanente.
 

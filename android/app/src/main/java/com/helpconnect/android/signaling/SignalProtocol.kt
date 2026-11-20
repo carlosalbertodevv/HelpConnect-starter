@@ -15,6 +15,25 @@ data class RemoteIceCandidate(
     val sdpMLineIndex: Int?
 )
 
+sealed interface RemoteControlAction {
+    data class Tap(val x: Int, val y: Int) : RemoteControlAction
+    data class LongPress(val x: Int, val y: Int, val durationMs: Int) : RemoteControlAction
+    data class Drag(
+        val fromX: Int,
+        val fromY: Int,
+        val toX: Int,
+        val toY: Int,
+        val durationMs: Int
+    ) : RemoteControlAction
+    data class Global(val action: String) : RemoteControlAction
+    data class TypeText(val text: String) : RemoteControlAction
+}
+
+data class RemoteControlCommand(
+    val commandId: String,
+    val action: RemoteControlAction
+)
+
 sealed interface ServerSignal {
     data class Joined(
         val participant: String,
@@ -26,6 +45,8 @@ sealed interface ServerSignal {
     data class Description(val type: String, val sdp: String) : ServerSignal
     data class IceCandidate(val candidate: RemoteIceCandidate?) : ServerSignal
     data class ConnectionState(val transport: String, val participant: String?, val state: String) : ServerSignal
+    data class RemoteControlState(val available: Boolean) : ServerSignal
+    data class RemoteControlCommandReceived(val command: RemoteControlCommand) : ServerSignal
     data class SessionEnded(val reason: String) : ServerSignal
     data class Error(val code: String, val message: String) : ServerSignal
     data object Left : ServerSignal
@@ -37,6 +58,7 @@ object SignalProtocol {
     private const val MAX_MESSAGE_BYTES = 16 * 1024
     private const val MAX_SDP_LENGTH = 12_000
     private const val NONCE_PATTERN = "^[A-Za-z0-9_-]{22}$"
+    private const val UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
 
     fun parse(raw: String): ServerSignal {
         if (raw.toByteArray(Charsets.UTF_8).size > MAX_MESSAGE_BYTES) {
@@ -53,9 +75,15 @@ object SignalProtocol {
             "ice_candidate" -> parseIceCandidate(json)
             "connection_state" -> ServerSignal.ConnectionState(
                 json.requiredString("transport"),
-                json.optString("participant").takeIf(String::isNotEmpty),
+                (json.optString("participant").ifEmpty { json.optString("sender") })
+                    .takeIf(String::isNotEmpty),
                 json.requiredString("state")
             )
+            "remote_control_state" -> ServerSignal.RemoteControlState(
+                json.opt("available") as? Boolean
+                    ?: throw SignalProtocolException("Disponibilidade de interações inválida.")
+            )
+            "remote_control_command" -> parseRemoteControlCommand(json)
             "session_ended" -> ServerSignal.SessionEnded(json.optString("reason", "session_unavailable"))
             "error" -> ServerSignal.Error(
                 json.optString("code", "UNKNOWN"),
@@ -79,7 +107,15 @@ object SignalProtocol {
         recipient: String,
         payload: JSONObject = JSONObject()
     ): String {
-        require(type in setOf("offer", "answer", "ice_candidate", "connection_state", "leave_session"))
+        require(type in setOf(
+            "offer",
+            "answer",
+            "ice_candidate",
+            "connection_state",
+            "leave_session",
+            "remote_control_state",
+            "remote_control_result"
+        ))
         require(sequence in 1..9_007_199_254_740_991L)
         require(connectionNonce.matches(Regex(NONCE_PATTERN)))
         if (type != "leave_session") require(recipient == "operator")
@@ -144,6 +180,7 @@ object SignalProtocol {
             candidate.getInt("sdpMLineIndex").takeIf { it >= 0 }
                 ?: throw SignalProtocolException("Índice de candidate ICE inválido.")
         }
+
         return ServerSignal.IceCandidate(
             RemoteIceCandidate(
                 value,
@@ -153,7 +190,66 @@ object SignalProtocol {
         )
     }
 
+    private fun parseRemoteControlCommand(json: JSONObject): ServerSignal.RemoteControlCommandReceived {
+        val commandId = json.requiredUuid("commandId")
+        val action = json.optJSONObject("action")
+            ?: throw SignalProtocolException("Ação de controle ausente.")
+        val parsed = when (action.requiredString("kind")) {
+            "tap" -> RemoteControlAction.Tap(
+                action.requiredCoordinate("x"),
+                action.requiredCoordinate("y")
+            )
+            "long_press" -> RemoteControlAction.LongPress(
+                action.requiredCoordinate("x"),
+                action.requiredCoordinate("y"),
+                action.requiredDuration("durationMs", 500, 2_000)
+            )
+            "drag" -> RemoteControlAction.Drag(
+                action.requiredCoordinate("fromX"),
+                action.requiredCoordinate("fromY"),
+                action.requiredCoordinate("toX"),
+                action.requiredCoordinate("toY"),
+                action.requiredDuration("durationMs", 100, 1_500)
+            )
+            "global" -> action.requiredString("action").takeIf { it in setOf("BACK", "HOME", "RECENTS") }
+                ?.let { RemoteControlAction.Global(it) }
+                ?: throw SignalProtocolException("Ação global de controle inválida.")
+            "type_text" -> action.requiredString("text")
+                .takeIf { it.length <= 512 }
+                ?.let { RemoteControlAction.TypeText(it) }
+                ?: throw SignalProtocolException("Texto de controle excedeu o limite.")
+            else -> throw SignalProtocolException("Tipo de ação de controle desconhecido.")
+        }
+        return ServerSignal.RemoteControlCommandReceived(
+            RemoteControlCommand(commandId, parsed)
+        )
+    }
+
+    private fun JSONObject.requiredCoordinate(key: String): Int {
+        val value = opt(key)
+        if (value !is Number) throw SignalProtocolException("Coordenada ausente: $key.")
+        val coordinate = value.toInt()
+        if (value.toDouble() != coordinate.toDouble() || coordinate !in 0..10_000) {
+            throw SignalProtocolException("Coordenada de controle inválida: $key.")
+        }
+        return coordinate
+    }
+
+    private fun JSONObject.requiredDuration(key: String, minimum: Int, maximum: Int): Int {
+        val value = opt(key)
+        if (value !is Number) throw SignalProtocolException("Duração de controle ausente: $key.")
+        val duration = value.toInt()
+        if (value.toDouble() != duration.toDouble() || duration !in minimum..maximum) {
+            throw SignalProtocolException("Duração de controle inválida: $key.")
+        }
+        return duration
+    }
+
     private fun JSONObject.requiredString(key: String): String =
         optString(key).takeIf(String::isNotEmpty)
             ?: throw SignalProtocolException("Campo obrigatório ausente: $key.")
+
+    private fun JSONObject.requiredUuid(key: String): String =
+        requiredString(key).takeIf { it.matches(Regex(UUID_PATTERN)) }
+            ?: throw SignalProtocolException("Identificador de controle inválido: $key.")
 }

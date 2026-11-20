@@ -44,10 +44,14 @@ class SignalProtocolTest {
         val ended = SignalProtocol.parse(
             """{"type":"session_ended","reason":"consent_revoked"}"""
         ) as ServerSignal.SessionEnded
+        val peerState = SignalProtocol.parse(
+            """{"type":"connection_state","transport":"webrtc","state":"connected","sender":"operator"}"""
+        ) as ServerSignal.ConnectionState
 
         assertEquals("0", candidate.candidate?.sdpMid)
         assertEquals(0, candidate.candidate?.sdpMLineIndex)
         assertEquals("consent_revoked", ended.reason)
+        assertEquals("operator", peerState.participant)
     }
 
     @Test
@@ -69,5 +73,51 @@ class SignalProtocolTest {
         assertEquals(7, sequencer.nextSequence())
         assertEquals(8, sequencer.nextSequence())
         assertEquals("0123456789012345678901", sequencer.connectionNonce())
+    }
+
+    @Test
+    fun parsesAvailabilityAndBoundedRemoteActions() {
+        val availability = SignalProtocol.parse(
+            """{"type":"remote_control_state","available":true}"""
+        ) as ServerSignal.RemoteControlState
+        val tap = SignalProtocol.parse(
+            """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174001","action":{"kind":"tap","x":10000,"y":0}}"""
+        ) as ServerSignal.RemoteControlCommandReceived
+        val text = SignalProtocol.parse(
+            """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174002","action":{"kind":"type_text","text":"texto"}}"""
+        ) as ServerSignal.RemoteControlCommandReceived
+
+        assertEquals(true, availability.available)
+        assertEquals(RemoteControlAction.Tap(10_000, 0), tap.command.action)
+        assertEquals(RemoteControlAction.TypeText("texto"), text.command.action)
+    }
+
+    @Test
+    fun rejectsLegacyApprovalMessagesAndOutOfRangeActions() {
+        assertThrows(SignalProtocolException::class.java) {
+            SignalProtocol.parse(
+                """{"type":"remote_control_request","requestId":"123e4567-e89b-42d3-a456-426614174000"}"""
+            )
+        }
+        assertThrows(SignalProtocolException::class.java) {
+            SignalProtocol.parse(
+                """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174001","action":{"kind":"tap","x":10001,"y":0}}"""
+            )
+        }
+        assertThrows(SignalProtocolException::class.java) {
+            SignalProtocol.parse(
+                """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174001","action":{"kind":"global","action":"POWER"}}"""
+            )
+        }
+        assertThrows(SignalProtocolException::class.java) {
+            SignalProtocol.parse(
+                """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174001","action":{"kind":"type_text","text":"${"x".repeat(513)}"}}"""
+            )
+        }
+        assertThrows(SignalProtocolException::class.java) {
+            SignalProtocol.parse(
+                """{"type":"remote_control_command","commandId":"123e4567-e89b-42d3-a456-426614174001","action":{"kind":"drag","fromX":0,"fromY":0,"toX":10000,"toY":10000,"durationMs":5000}}"""
+            )
+        }
     }
 }

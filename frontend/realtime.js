@@ -1,5 +1,12 @@
 (() => {
   const activeConnections = new Map();
+  function createMessageId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
   const websocketUrl = (apiUrl) => {
     const url = new URL(apiUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -9,24 +16,48 @@
     return url.toString();
   };
 
-  function connect({ sessionId, apiUrl, getAccessToken, getIceServers, onMessage, onState, onStream, onError }) {
+  function connect({
+    sessionId,
+    apiUrl,
+    getAccessToken,
+    getIceServers,
+    onMessage,
+    onState,
+    onStream,
+    onError,
+    onControlState,
+    onControlResult
+  }) {
     let socket;
     let peerConnection;
     let sequence = 0;
     let connectionNonce;
+    let joined = false;
     let reconnectAttempts = 0;
     let reconnectTimer;
     let restartTimer;
     let stopped = false;
     let deviceConnected = false;
+    let remoteControlAvailable = false;
+    let deviceAdvertisedAvailable = false;
+    let hasRemoteStream = false;
+    const pendingCommands = new Map();
     let queue = Promise.resolve();
     const pendingCandidates = [];
 
     const updateState = (transport, state) => onState?.(transport, state);
     const reportError = (text) => onError?.(text);
+    function updateRemoteControlAvailability() {
+      remoteControlAvailable =
+        deviceAdvertisedAvailable &&
+        deviceConnected &&
+        peerConnection?.connectionState === "connected" &&
+        hasRemoteStream;
+      onControlState?.(remoteControlAvailable ? "available" : "unavailable");
+    }
 
     function send(message) {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      if (!joined || !connectionNonce || !socket || socket.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify({ ...message, sequence: ++sequence, connectionNonce }));
       return true;
     }
@@ -37,12 +68,25 @@
       if (stopped) return null;
       const peer = new RTCPeerConnection({ iceServers });
       peerConnection = peer;
-      peer.ontrack = (event) => onStream?.(event.streams[0] || new MediaStream([event.track]));
+      peer.ontrack = (event) => {
+        hasRemoteStream = true;
+        const stream = event.streams[0] || new MediaStream([event.track]);
+        event.track.addEventListener("ended", () => {
+          hasRemoteStream = false;
+          deviceAdvertisedAvailable = false;
+          pendingCommands.clear();
+          updateRemoteControlAvailability();
+          onStream?.(null);
+        }, { once: true });
+        onStream?.(stream);
+        updateRemoteControlAvailability();
+      };
       peer.onicecandidate = (event) => {
         send({ type: "ice_candidate", recipient: "device", candidate: event.candidate?.toJSON() ?? null });
       };
       peer.onconnectionstatechange = () => {
         updateState("webrtc", peer.connectionState);
+        updateRemoteControlAvailability();
         send({
           type: "connection_state",
           recipient: "device",
@@ -80,9 +124,20 @@
       }
       if (message.type === "error") {
         reportError(message.message || "Erro de comunicação.");
+        if (typeof message.code === "string" && message.code.startsWith("CONTROL_")) {
+          remoteControlAvailable = false;
+          deviceAdvertisedAvailable = false;
+          pendingCommands.clear();
+          onControlState?.("unavailable");
+        }
         if (message.code === "SESSION_FORBIDDEN" || message.code === "UNAUTHENTICATED") {
           stopped = true;
           socket?.close(4403, "Session unavailable");
+          remoteControlAvailable = false;
+          deviceAdvertisedAvailable = false;
+          hasRemoteStream = false;
+          pendingCommands.clear();
+          onControlState?.("unavailable");
           updateState("device", "disconnected");
           updateState("webrtc", "closed");
           peerConnection?.close();
@@ -101,11 +156,16 @@
         reportError("O atendimento foi encerrado ou o consentimento foi revogado.");
         peerConnection?.close();
         peerConnection = null;
+        remoteControlAvailable = false;
+        deviceAdvertisedAvailable = false;
+        hasRemoteStream = false;
+        onControlState?.("closed");
         onStream?.(null);
         activeConnections.delete(sessionId);
         return;
       }
       if (message.type === "join_session" && message.accepted) {
+        joined = true;
         reconnectAttempts = 0;
         if (Number.isSafeInteger(message.nextSequence)) {
           sequence = Math.max(sequence, message.nextSequence - 1);
@@ -117,12 +177,35 @@
       if (message.type === "connection_state" && message.transport === "websocket") {
         if (message.participant === "device") {
           deviceConnected = message.state === "connected";
+          if (!deviceConnected) {
+            deviceAdvertisedAvailable = false;
+            pendingCommands.clear();
+          }
+          updateRemoteControlAvailability();
           updateState("device", message.state);
         }
         return;
       }
       if (message.type === "connection_state" && message.transport === "webrtc") {
         updateState("webrtc", message.state);
+        if (message.state !== "connected") {
+          deviceAdvertisedAvailable = false;
+          pendingCommands.clear();
+          updateRemoteControlAvailability();
+        }
+        return;
+      }
+      if (message.type === "remote_control_state") {
+        deviceAdvertisedAvailable = message.available === true && message.sender === "device";
+        if (!deviceAdvertisedAvailable) pendingCommands.clear();
+        updateRemoteControlAvailability();
+        return;
+      }
+      if (message.type === "remote_control_result") {
+        const command = pendingCommands.get(message.commandId);
+        if (!command) return;
+        pendingCommands.delete(message.commandId);
+        onControlResult?.(message);
         return;
       }
       if (message.type === "offer" || message.type === "answer") {
@@ -170,6 +253,14 @@
       };
       socket.onerror = () => reportError("Falha na conexão WebSocket.");
       socket.onclose = () => {
+        joined = false;
+        deviceConnected = false;
+        remoteControlAvailable = false;
+        deviceAdvertisedAvailable = false;
+        hasRemoteStream = false;
+        pendingCommands.clear();
+        updateState("device", "disconnected");
+        onControlState?.("closed");
         if (stopped) return;
         updateState("websocket", "disconnected");
         if (reconnectAttempts >= 5) return;
@@ -179,7 +270,29 @@
     }
 
     openSocket();
+    function sendRemoteControlCommand(action) {
+      if (
+        stopped ||
+        !remoteControlAvailable ||
+        !hasRemoteStream ||
+        !deviceConnected ||
+        peerConnection?.connectionState !== "connected" ||
+        socket?.readyState !== WebSocket.OPEN
+      ) return false;
+      const commandId = createMessageId();
+      const message = {
+        type: "remote_control_command",
+        recipient: "device",
+        commandId,
+        action
+      };
+      if (!send(message)) return false;
+      pendingCommands.set(commandId, true);
+      return true;
+    }
+
     const connection = {
+      sendRemoteControlCommand,
       stop() {
         stopped = true;
         clearTimeout(reconnectTimer);
@@ -187,9 +300,16 @@
         peerConnection?.close();
         peerConnection = null;
         if (socket && socket.readyState < WebSocket.CLOSING) {
-          if (socket.readyState === WebSocket.OPEN) send({ type: "leave_session" });
+          if (socket.readyState === WebSocket.OPEN) {
+            send({ type: "leave_session" });
+          }
           socket.close(1000, "Operator left");
         }
+        remoteControlAvailable = false;
+        deviceAdvertisedAvailable = false;
+        hasRemoteStream = false;
+        pendingCommands.clear();
+        onControlState?.("closed");
         updateState("websocket", "disconnected");
         updateState("device", "disconnected");
         updateState("webrtc", "closed");
