@@ -6,7 +6,7 @@ O endpoint autenticado `GET /api/sessions/:id/ice-servers` retorna os servidores
 
 O app Android inicializa `PeerConnectionFactory`, cria a conexão com ICE recebido no handshake, adiciona a track da tela capturada e inicia a negociação com uma Offer. O painel recebe a Offer, responde com Answer e exibe a stream real por `ontrack`. Offers de renegociação ICE do painel são respondidas pelo app. Não há stream fictícia. O signaling encaminha disponibilidade de interações e comandos somente entre participantes autenticados da mesma sessão com consentimento ativo; veja [CONTROLE-REMOTO.md](./CONTROLE-REMOTO.md).
 
-O app não reutiliza o ticket para reconectar: se o WebSocket cair, a conexão WebRTC/captura é encerrada e um novo ticket deve ser emitido pelo atendente. A reconexão WebSocket com backoff continua sendo responsabilidade do painel, que usa a autenticação Supabase própria.
+O app não reutiliza o ticket para reconectar: se o WebSocket cair, a conexão WebRTC/captura é encerrada. O cliente pode digitar `EUQUERO` novamente e confirmar a sessão para obter outro ticket de uso único. A reconexão WebSocket com backoff continua sendo responsabilidade do painel, que usa a autenticação Supabase própria.
 
 ## Variáveis de ICE
 

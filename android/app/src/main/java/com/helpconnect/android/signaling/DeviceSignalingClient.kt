@@ -54,14 +54,14 @@ class DeviceSignalingClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!intentionallyClosed) {
                     Log.e(TAG, "WebSocket signaling failed", t)
-                    fail("A conexão WebSocket falhou. Gere uma nova credencial no painel antes de tentar novamente.")
+                    fail("A conexão WebSocket falhou. Abra o app e digite EUQUERO para tentar novamente.")
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (!intentionallyClosed && !terminal.get()) {
                     Log.w(TAG, "WebSocket signaling closed unexpectedly (code=$code)")
-                    fail("A conexão WebSocket foi encerrada. Gere uma nova credencial antes de reconectar.")
+                    fail("A conexão WebSocket foi encerrada. Digite EUQUERO para reconectar.")
                 }
             }
         })

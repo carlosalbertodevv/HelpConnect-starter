@@ -3,17 +3,16 @@ import { z } from "zod";
 import { prisma } from "../db.js";
 import { config } from "../config.js";
 import { requireOperator } from "../middleware/operatorAuth.js";
-import { createRawToken, createSessionCode, hashToken } from "../utils/tokens.js";
+import { createSessionCode } from "../utils/tokens.js";
 import { findAuthorizedSession } from "../services/sessionAccess.js";
-import { issueDeviceTicket, revokeDeviceTickets } from "../services/deviceTickets.js";
+import { revokeDeviceTickets } from "../services/deviceTickets.js";
 import { createIceServers } from "../services/iceConfig.js";
 import { terminateSessionConnections } from "../websocket/sessionRegistry.js";
 
 const router = Router();
 const activeStatuses = ["PENDING", "CONSENTED", "CONNECTING", "ACTIVE"];
 const createSchema = z.object({
-  clientId: z.uuid().optional(),
-  clientName: z.string().trim().min(1).max(100).optional()
+  clientId: z.uuid()
 }).strict();
 const idSchema = z.uuid();
 
@@ -90,25 +89,20 @@ router.post("/", requireOperator, async (req, res, next) => {
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Dados inválidos." });
 
-    let client = null;
-    if (parsed.data.clientId) {
-      client = await prisma.client.findFirst({
-        where: { id: parsed.data.clientId, operatorId: req.operator.id, isActive: true },
-        select: { id: true, name: true }
-      });
-      if (!client) return res.status(404).json({ error: "Cliente não encontrado." });
-    }
+    const client = await prisma.client.findFirst({
+      where: { id: parsed.data.clientId, operatorId: req.operator.id, isActive: true },
+      select: { id: true, name: true }
+    });
+    if (!client) return res.status(404).json({ error: "Cliente não encontrado." });
 
-    const rawToken = createRawToken();
     const expiresAt = new Date(Date.now() + config.sessionTtlMinutes * 60_000);
     const session = await prisma.$transaction(async (tx) => {
       const created = await tx.remoteSession.create({
         data: {
           operatorId: req.operator.id,
-          clientId: client?.id ?? null,
-          clientName: client?.name ?? parsed.data.clientName ?? null,
+          clientId: client.id,
+          clientName: client.name,
           publicCode: createSessionCode(),
-          accessTokenHash: hashToken(rawToken),
           expiresAt
         },
         select: {
@@ -122,8 +116,7 @@ router.post("/", requireOperator, async (req, res, next) => {
       return created;
     });
 
-    const link = `${config.publicAppUrl.replace(/\/$/, "")}/client.html#${rawToken}`;
-    res.status(201).json({ session, link });
+    res.status(201).json({ session });
   } catch (error) {
     next(error);
   }
@@ -159,27 +152,6 @@ router.post("/:id/end", requireOperator, async (req, res, next) => {
     revokeDeviceTickets(parsedId.data);
     terminateSessionConnections(parsedId.data, "operator_ended");
     res.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post("/:id/device-ticket", requireOperator, async (req, res, next) => {
-  try {
-    const parsedId = idSchema.safeParse(req.params.id);
-    if (!parsedId.success) return res.status(400).json({ error: "Identificador inválido." });
-    const session = await findAuthorizedSession(prisma, parsedId.data, req.operator.id);
-    if (!session) return res.status(404).json({ error: "Sessão não encontrada, sem consentimento ou expirada." });
-
-    const ticket = issueDeviceTicket(parsedId.data, config.deviceTicketTtlSeconds);
-    await prisma.sessionLog.create({
-      data: { sessionId: parsedId.data, event: "DEVICE_TICKET_ISSUED", actorId: req.operator.id }
-    });
-    res.status(201).json({
-      deviceToken: ticket.token,
-      expiresAt: ticket.expiresAt,
-      message: "Credencial temporária de uso único. Entregue-a ao aplicativo Android por um canal seguro."
-    });
   } catch (error) {
     next(error);
   }

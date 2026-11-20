@@ -53,6 +53,12 @@ model Client {
 model Device {
   id             String   @id @default(uuid()) @db.Uuid
   clientId       String?  @db.Uuid
+  publicKey      String?  @unique
+  pairingCodeHash String? @unique
+  pairingExpiresAt DateTime?
+  pairedAt       DateTime?
+  revokedAt      DateTime?
+  isActive       Boolean  @default(true)
   model          String?
   androidVersion String?
   createdAt      DateTime @default(now())
@@ -61,7 +67,7 @@ model Device {
   client   Client?         @relation(fields: [clientId], references: [id], onDelete: SetNull)
   sessions RemoteSession[]
 
-  @@index([clientId, createdAt])
+  @@index([clientId, isActive, createdAt])
 }
 
 model RemoteSession {
@@ -74,7 +80,7 @@ model RemoteSession {
   deviceModel     String?
   androidVersion  String?
   status          RemoteSessionStatus @default(PENDING)
-  accessTokenHash String              @unique
+  accessTokenHash String?             @unique
   expiresAt       DateTime
   consentedAt     DateTime?
   startedAt       DateTime?

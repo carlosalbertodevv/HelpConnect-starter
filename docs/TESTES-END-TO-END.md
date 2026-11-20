@@ -11,13 +11,15 @@ cd android
 .\gradlew.bat lintDebug
 ```
 
-Os testes existentes cobrem tokens, ICE, resolucao de tickets e sinalizacao WebSocket. Os testes do painel devem validar estados sem usar stream ficticio.
+Os testes existentes cobrem pareamento, prova criptográfica do aparelho, palavra-chave, isolamento por cliente, tickets, ICE e sinalização WebSocket. Os testes do painel devem validar estados sem usar stream fictício.
 
 ## Cenarios de sinalizacao
 
 - Login do atendente e acesso somente a sua sessao.
-- Consentimento antes da emissao de ticket.
-- Ticket expirado, consumido e revogado.
+- Aparelho não pareado recebe código temporário; códigos inválidos ou expirados não podem ser associados.
+- Prova de chave inválida, desafio expirado/repetido e palavra-chave incorreta são rejeitados.
+- Aparelho pareado só localiza sessões do cliente associado; zero ou múltiplas sessões não autorizam entrada.
+- Confirmação explícita antes da emissão de ticket; ticket expirado, consumido e revogado.
 - Offer/Answer e candidates em ambas as direcoes.
 - Sequence e nonce contra replay.
 - Segunda conexao substituindo o mesmo papel.
@@ -31,11 +33,11 @@ Os testes existentes cobrem tokens, ICE, resolucao de tickets e sinalizacao WebS
 3. Configure `helpconnectApiBaseUrl` com HTTPS ou uma URL LAN acessivel.
 4. Compile e instale o APK debug.
 5. Conceda notificacoes no Android 13+.
-6. No painel, registre consentimento e gere ticket/codigo.
-7. Informe codigo e ticket no app.
+6. No painel, associe o código de pareamento ao cliente e crie uma sessão para esse cliente.
+7. No app, digite `EUQUERO`, confira a identificação e confirme o atendimento.
 8. Aguarde o atendente conectar.
-9. Aceite o dialogo oficial de MediaProjection.
+9. Aceite o diálogo oficial de MediaProjection.
 10. Confirme no painel `ontrack`, `<video>` e indicadores de WebRTC.
-11. Interrompa pelo app, notificacao ou painel e confirme que a captura para.
+11. Interrompa pelo app, notificação ou painel; revogue também o pareamento e confirme que as sessões associadas são encerradas.
 
 Nao declarar validacao fisica sem um aparelho conectado e frames recebidos observados no painel.

@@ -34,6 +34,6 @@ O build release falha sem HTTPS e sem segredo permanente no APK. Para debug loca
 
 - Tickets, limites, monitoramento e sequencias anti-replay sao locais ao processo.
 - Multiplas instancias exigem Redis/armazenamento compartilhado antes do deploy escalado.
-- O heartbeat detecta socket morto, mas reconexao segura requer novo ticket.
+- O heartbeat detecta socket morto, mas reconexão segura do dispositivo requer nova confirmação no app para emitir outro ticket.
 - TURN e HTTPS sao requisitos operacionais para muitos ambientes NAT.
 - Ainda nao existe evidenca de frames reais sem teste em aparelho fisico.

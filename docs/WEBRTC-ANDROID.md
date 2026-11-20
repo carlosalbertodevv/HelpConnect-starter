@@ -16,7 +16,7 @@ O dispositivo obtém `iceServers` na resposta já existente do `join_session`. T
 6. O app processa Answer/Offer remoto, aplica candidates recebidos e responde a Offer de renegociação do painel.
 7. A conexão publica estados WebRTC em `connection_state`. SDP e ICE não são persistidos.
 
-O backend valida papel, consentimento, sessão, nonce e sequência e só encaminha para o peer da mesma sessão. O ticket é consumido no `join_session`; a conexão do Android não tenta reconectar com a mesma credencial. Se o WebSocket falhar, a captura é finalizada.
+O backend valida papel, consentimento, sessão, nonce e sequência e só encaminha para o peer da mesma sessão. O ticket é consumido no `join_session`; a conexão do Android não tenta reconectar com a mesma credencial. Se o WebSocket falhar, a captura é finalizada e o cliente pode repetir `EUQUERO` e confirmar novamente para emitir outro ticket.
 
 ## Limites de captura
 

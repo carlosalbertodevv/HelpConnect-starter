@@ -2,69 +2,35 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { consumeDeviceTicket, issueDeviceTicket, revokeDeviceTickets } from "../backend/src/services/deviceTickets.js";
-import { resolveDeviceTicketSession } from "../backend/src/services/deviceTicketSessions.js";
+import { findDeviceSessions, isValidEntryKeyword } from "../backend/src/services/deviceSessions.js";
 
-function createPrisma(session) {
-  return {
+test("a paired device only searches active sessions of its own client", async () => {
+  let query;
+  const expected = [{ id: randomUUID(), clientId: "client-a", deviceId: "device-a" }];
+  const prisma = {
     remoteSession: {
-      findUnique: async ({ where }) => where.id === session.id ? {
-        ...session,
-        permissions: [{ granted: session.granted }]
-      } : null
+      findMany: async (value) => {
+        query = value;
+        return expected;
+      }
     }
   };
-}
+  const now = new Date();
+  const result = await findDeviceSessions(prisma, "client-a", "device-a", now);
 
-test("resolves a valid ticket only for its matching active, consented session", async () => {
-  const session = {
-    id: randomUUID(),
-    publicCode: "HC-ABCDEF012345",
-    status: "CONSENTED",
-    expiresAt: new Date(Date.now() + 60_000),
-    granted: true
-  };
-  const ticket = issueDeviceTicket(session.id, 120);
-
-  const result = await resolveDeviceTicketSession(
-    createPrisma(session),
-    session.publicCode,
-    ticket.token
-  );
-
-  assert.deepEqual(result, { sessionId: session.id, expiresAt: session.expiresAt });
-  assert.equal(await resolveDeviceTicketSession(createPrisma(session), "HC-000000000000", ticket.token), null);
-  assert.deepEqual(
-    await resolveDeviceTicketSession(createPrisma(session), session.publicCode, ticket.token),
-    { sessionId: session.id, expiresAt: session.expiresAt }
-  );
+  assert.deepEqual(result, expected);
+  assert.equal(query.where.clientId, "client-a");
+  assert.deepEqual(query.where.OR, [{ deviceId: null }, { deviceId: "device-a" }]);
+  assert.deepEqual(query.where.status.in, ["PENDING", "CONSENTED", "CONNECTING", "ACTIVE"]);
+  assert.equal(query.where.expiresAt.gt, now);
+  assert.equal(query.take, 2);
 });
 
-test("does not resolve expired, unconsented, or invalid tickets", async () => {
-  const session = {
-    id: randomUUID(),
-    publicCode: "HC-ABCDEF012345",
-    status: "CONSENTED",
-    expiresAt: new Date(Date.now() + 60_000),
-    granted: true
-  };
-  const ticket = issueDeviceTicket(session.id, 30);
-
-  assert.equal(
-    await resolveDeviceTicketSession(createPrisma(session), session.publicCode, ticket.token, Date.now() + 31_000),
-    null
-  );
-  assert.equal(
-    await resolveDeviceTicketSession(
-      createPrisma({ ...session, granted: false }),
-      session.publicCode,
-      ticket.token
-    ),
-    null
-  );
-  assert.equal(
-    await resolveDeviceTicketSession(createPrisma(session), session.publicCode, "not-a-ticket"),
-    null
-  );
+test("validates the entry keyword but does not use it as session identity", () => {
+  assert.equal(isValidEntryKeyword("EUQUERO"), true);
+  assert.equal(isValidEntryKeyword("  euquero  "), true);
+  assert.equal(isValidEntryKeyword("EUQUERO-OUTRA"), false);
+  assert.equal(isValidEntryKeyword(""), false);
 });
 
 test("revoking a session invalidates pending tickets and prevents replay", () => {

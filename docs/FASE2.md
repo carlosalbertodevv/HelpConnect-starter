@@ -8,7 +8,7 @@ Esta fase **não captura nem transmite tela por si só**, não executa ações r
 
 - O `WebSocketServer` compartilha o servidor HTTP da API no caminho `/ws`.
 - O atendente autentica com token Supabase; o servidor confirma que é dono da sessão.
-- Um atendente autenticado pode emitir uma credencial Android aleatória, curta e de uso único. O hash fica somente em memória e a credencial não é registrada em logs. A Fase 3 deverá entregá-la ao app por um canal seguro.
+- O ticket Android é curto e de uso único. No fluxo atual, o backend o emite após a confirmação explícita do aparelho pareado; não é copiado nem enviado manualmente pelo atendente.
 - Os dois participantes precisam estar na mesma sessão, não expirada, com consentimento ativo. A autorização é revalidada nas mensagens e periodicamente durante a conexão.
 - Offer, answer, ICE candidate e estados WebRTC são encaminhados ao outro participante; SDP e candidates não são armazenados.
 - As credenciais e limites de conexões/tickets são locais ao processo. Reiniciar o processo invalida tickets e conexões. Antes de escalar para várias instâncias, será necessário um serviço compartilhado atômico para tickets, limites e sequências anti-replay.
@@ -36,15 +36,16 @@ npm run prisma:generate
 npm run dev
 ```
 
-Sirva `frontend/` em `http://localhost:5500` (por exemplo, pelo Live Server) e configure `frontend/config.js` com a URL da API. Para testar o link no Android Emulator, use `http://10.0.2.2:5500` no link, mantenha o Live Server acessível em `0.0.0.0` e permita a origem em `APP_ORIGINS`; a API aceita múltiplas origens explícitas. A comunicação local usa `ws://`; produção exige HTTPS/WSS por meio de um proxy reverso confiável e `TRUST_PROXY` configurado conforme a implantação.
+Sirva `frontend/` em `http://localhost:5500` e configure `frontend/config.js` com a URL da API para o painel web. O app Android não abre link: no emulador, usa `http://10.0.2.2:3001/api`. A comunicação local usa `ws://`; produção exige HTTPS/WSS por meio de um proxy reverso confiável e `TRUST_PROXY` configurado conforme a implantação.
 
 ## Rotas adicionais
 
-- `POST /api/sessions/:id/device-ticket` — autenticada; emite credencial Android de uso único para uma sessão própria com consentimento válido. Retorna o token uma única vez.
+- `POST /api/public/sessions/device-challenge` e `/device-session` — desafio assinado, validação de `EUQUERO` e resolução da sessão limitada ao cliente do aparelho pareado.
+- `POST /api/public/sessions/device-consent` — registra confirmação no app e emite o ticket efêmero consumido pelo handshake WebSocket.
 - `GET /api/sessions/:id/ice-servers` — autenticada; retorna STUN e credenciais TURN temporárias, quando Coturn está configurado.
 - `POST /api/public/sessions/revoke` — recebe o token do link no corpo, revoga o consentimento, encerra o atendimento e desconecta participantes.
 
-O painel oferece conexão de sinalização, estado do dispositivo/WebRTC, visualização futura de `MediaStream` e botão de encerramento. A credencial do dispositivo expira rapidamente e deve ser transferida somente ao aplicativo autorizado.
+O painel oferece conexão de sinalização, estado do dispositivo/WebRTC, visualização de `MediaStream` e botão de encerramento. Esta documentação descreve a evolução da sinalização na Fase 2; o fluxo de pareamento e entrada Android atual está em [FASE3.md](./FASE3.md).
 
 ## Ubuntu
 
@@ -71,4 +72,4 @@ Os testes WebSocket usam um servidor HTTP local e dependências simuladas; não 
 
 ## Próxima fase
 
-A Fase 3 adiciona o app Android e a captura somente via diálogo oficial de `MediaProjection`/Foreground Service. O painel continua emitindo o ticket; o atendente deve transferi-lo ao cliente por canal seguro junto do código. O Android valida o par código/ticket antes de consumir o ticket no handshake WebSocket. Consulte [FASE3.md](./FASE3.md) e [ANDROID.md](./ANDROID.md). Nenhum bypass de permissão é previsto.
+A Fase 3 adiciona o app Android, o pareamento do aparelho e a captura somente via diálogo oficial de `MediaProjection`/Foreground Service. Consulte [FASE3.md](./FASE3.md) e [ANDROID.md](./ANDROID.md). Nenhum bypass de permissão é previsto.

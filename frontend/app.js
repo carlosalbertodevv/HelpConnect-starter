@@ -54,7 +54,7 @@ async function enter(userSession) {
   show("dashboard", true);
   show("logout", true);
   setView("dashboard");
-  await Promise.all([loadSessions(), loadClients(), loadDashboard()]);
+  await Promise.all([loadSessions(), loadClients(), loadDevices(), loadDashboard()]);
 }
 
 function applyTheme(theme) {
@@ -144,37 +144,14 @@ $("refresh").onclick = async () => {
 
 $("createSession").onclick = async () => {
   const clientId = $("sessionClient").value;
-  const clientName = $("clientName").value.trim();
-  const payload = clientId ? { clientId } : (clientName ? { clientName } : {});
+  if (!clientId) {
+    message("sessionMessage", "Selecione o cliente cadastrado para localizar o aparelho pareado.");
+    return;
+  }
   $("createSession").disabled = true;
   try {
-    const data = await api("/sessions", { method: "POST", body: JSON.stringify(payload) });
-    const linkArea = $("generatedLink");
-    linkArea.replaceChildren();
-    const code = document.createElement("strong");
-    code.textContent = `Código: ${data.session.publicCode}`;
-    const link = document.createElement("a");
-    link.href = data.link;
-    link.textContent = data.link;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    const copy = document.createElement("button");
-    copy.type = "button";
-    copy.className = "ghost";
-    copy.textContent = "Copiar link";
-    copy.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(data.link);
-        copy.textContent = "Link copiado";
-      } catch {
-        message("sessionMessage", "Não foi possível copiar automaticamente; selecione o link para copiá-lo.");
-      }
-    };
-    const note = document.createElement("small");
-    note.textContent = "Guarde este link: o token não será exibido novamente. O link expira automaticamente.";
-    linkArea.append(code, link, copy, note);
-    show("generatedLink", true);
-    message("sessionMessage", "");
+    const data = await api("/sessions", { method: "POST", body: JSON.stringify({ clientId }) });
+    message("sessionMessage", `Atendimento ${data.session.publicCode} criado. O cliente pode abrir o app e digitar EUQUERO.`);
     await Promise.all([loadSessions(), loadDashboard()]);
   } catch (error) {
     message("sessionMessage", error.message);
@@ -340,37 +317,6 @@ async function loadSessions() {
             message(`realtime-${session.id}-error`, error.message);
           }
         };
-        const ticketButton = document.createElement("button");
-        ticketButton.type = "button";
-        ticketButton.className = "ghost";
-        ticketButton.textContent = "Gerar credencial Android";
-        const ticketOutput = document.createElement("code");
-        ticketOutput.className = "device-ticket";
-        const copyTicket = document.createElement("button");
-        copyTicket.type = "button";
-        copyTicket.className = "ghost hidden";
-        copyTicket.textContent = "Copiar credencial";
-        copyTicket.onclick = async () => {
-          try {
-            await navigator.clipboard.writeText(ticketOutput.textContent);
-            copyTicket.textContent = "Credencial copiada";
-          } catch {
-            message(`realtime-${session.id}-error`, "Não foi possível copiar a credencial; selecione-a manualmente.");
-          }
-        };
-        ticketButton.onclick = async () => {
-          ticketButton.disabled = true;
-          try {
-            const result = await api(`/sessions/${session.id}/device-ticket`, { method: "POST" });
-            ticketOutput.textContent = result.deviceToken;
-            copyTicket.classList.remove("hidden");
-            message(`realtime-${session.id}-error`, `Credencial válida até ${new Date(result.expiresAt).toLocaleTimeString("pt-BR")}. ${result.message}`);
-          } catch (error) {
-            message(`realtime-${session.id}-error`, error.message);
-          } finally {
-            ticketButton.disabled = false;
-          }
-        };
         const video = document.createElement("video");
         video.id = `realtime-${session.id}-video`;
         video.className = "remote-screen";
@@ -509,8 +455,8 @@ async function loadSessions() {
         error.id = `realtime-${session.id}-error`;
         error.className = "message";
         error.setAttribute("aria-live", "polite");
-        actions.append(connect, ticketButton, copyTicket);
-        panel.append(heading, states, transmissionStatus, actions, ticketOutput, video, placeholder, controlPanel, error);
+        actions.append(connect);
+        panel.append(heading, states, transmissionStatus, actions, video, placeholder, controlPanel, error);
         entry.append(panel);
       } else {
         const existing = realtimeConnections.get(session.id);
@@ -564,14 +510,20 @@ async function loadClients() {
   try {
     const { clients } = await api("/clients");
     const root = $("clients");
-    const select = $("sessionClient");
-    const selected = select.value;
-    select.replaceChildren(new Option("Atendimento avulso", ""));
+    const sessionSelect = $("sessionClient");
+    const pairingSelect = $("pairingClient");
+    const selectedSessionClient = sessionSelect.value;
+    const selectedPairingClient = pairingSelect.value;
+    sessionSelect.replaceChildren(new Option("Selecione um cliente", ""));
+    pairingSelect.replaceChildren(new Option("Selecione um cliente", ""));
     root.replaceChildren();
     if (!clients.length) root.textContent = "Nenhum cliente cadastrado.";
 
     for (const client of clients) {
-      if (client.isActive) select.add(new Option(client.name, client.id));
+      if (client.isActive) {
+        sessionSelect.add(new Option(client.name, client.id));
+        pairingSelect.add(new Option(client.name, client.id));
+      }
       const row = document.createElement("div");
       row.className = "session";
       const info = document.createElement("div");
@@ -624,11 +576,92 @@ async function loadClients() {
       row.append(actions);
       root.append(row);
     }
-    if (selected && [...select.options].some((option) => option.value === selected)) select.value = selected;
+    if ([...sessionSelect.options].some((option) => option.value === selectedSessionClient)) {
+      sessionSelect.value = selectedSessionClient;
+    }
+    if ([...pairingSelect.options].some((option) => option.value === selectedPairingClient)) {
+      pairingSelect.value = selectedPairingClient;
+    }
   } catch (error) {
     $("clients").textContent = error.message;
   }
 }
+
+async function loadDevices() {
+  try {
+    const { devices } = await api("/devices");
+    const root = $("devices");
+    root.replaceChildren();
+    if (!devices.length) {
+      root.textContent = "Nenhum aparelho pareado.";
+      return;
+    }
+    for (const device of devices) {
+      const row = document.createElement("div");
+      row.className = "session";
+      const info = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = device.clientName;
+      const detail = document.createElement("small");
+      const pairedAt = device.pairedAt
+        ? new Date(device.pairedAt).toLocaleString("pt-BR")
+        : "Data indisponível";
+      detail.textContent = `${device.model || "Aparelho Android"} · Pareado em ${pairedAt} · ${device.isActive ? "Ativo" : "Revogado"}`;
+      info.append(title, detail);
+      row.append(info);
+      if (device.isActive) {
+        const revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.className = "ghost";
+        revoke.textContent = "Revogar aparelho";
+        revoke.onclick = async () => {
+          if (!window.confirm(`Revogar o aparelho pareado ao cliente ${device.clientName}?`)) return;
+          revoke.disabled = true;
+          try {
+            await api(`/devices/${device.id}/revoke`, { method: "POST" });
+            await loadDevices();
+            message("devicePairingMessage", "Aparelho revogado; atendimentos ativos nesse aparelho foram encerrados.");
+          } catch (error) {
+            message("devicePairingMessage", error.message);
+            revoke.disabled = false;
+          }
+        };
+        row.append(revoke);
+      }
+      root.append(row);
+    }
+  } catch (error) {
+    $("devices").textContent = error.message;
+  }
+}
+
+$("pairingCode").addEventListener("input", () => {
+  $("pairingCode").value = $("pairingCode").value.toUpperCase().replace(/[^A-F0-9]/g, "").slice(0, 8);
+});
+
+$("pairDevice").onclick = async () => {
+  const pairingCode = $("pairingCode").value.trim();
+  const clientId = $("pairingClient").value;
+  if (!clientId || !/^[A-F0-9]{8}$/.test(pairingCode)) {
+    message("devicePairingMessage", "Selecione o cliente e informe o código de 8 caracteres exibido no app.");
+    return;
+  }
+  if (!window.confirm("Confirme que verificou a identidade do cliente antes de vincular este aparelho.")) return;
+  $("pairDevice").disabled = true;
+  try {
+    const result = await api("/devices/pair", {
+      method: "POST",
+      body: JSON.stringify({ pairingCode, clientId })
+    });
+    $("pairingCode").value = "";
+    message("devicePairingMessage", result.message);
+    await loadDevices();
+  } catch (error) {
+    message("devicePairingMessage", error.message);
+  } finally {
+    $("pairDevice").disabled = false;
+  }
+};
 
 $("clientForm").onsubmit = async (event) => {
   event.preventDefault();

@@ -4,9 +4,9 @@
 
 O consentimento registrado para o atendimento cobre compartilhamento de tela e interações remotas. Não há pedido nem aprovação adicional durante a sessão. O backend usa o consentimento existente `SUPPORT_SESSION`; a opção `REMOTE_CONTROL` da migration antiga permanece apenas por compatibilidade histórica e não é mais gravada.
 
-1. O atendente cria a sessão e envia o link ao usuário.
-2. O usuário autoriza explicitamente o atendimento no link.
-3. O app Android valida código e ticket e aguarda o atendente.
+1. O atendente pareia o aparelho ao cadastro do cliente e cria a sessão para esse cliente.
+2. O usuário digita `EUQUERO`, confere o atendimento e confirma explicitamente no app.
+3. O backend valida a identidade pareada e o consentimento; o app aguarda o atendente.
 4. Ao iniciar o compartilhamento, o usuário aceita o diálogo oficial do Android para `MediaProjection`.
 5. Se o usuário também habilitar HelpConnect manualmente em **Configurações > Acessibilidade**, as interações são ativadas automaticamente quando o vídeo/WebRTC estiver conectado. O app pode abrir essa tela após ação do usuário, mas nunca ativa o serviço automaticamente; o compartilhamento pode continuar sem interações.
 6. Toques, gestos, navegação e texto em campo editável ficam disponíveis automaticamente somente enquanto o serviço de acessibilidade e a conexão de vídeo estão ativos.

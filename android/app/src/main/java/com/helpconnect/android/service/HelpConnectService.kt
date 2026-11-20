@@ -17,10 +17,11 @@ import android.util.Log
 import com.helpconnect.android.accessibility.RemoteControlAccessibilityService
 import com.helpconnect.android.BuildConfig
 import com.helpconnect.android.R
+import com.helpconnect.android.data.AndroidDeviceIdentity
 import com.helpconnect.android.data.DeviceApi
 import com.helpconnect.android.data.DeviceApiResponseException
+import com.helpconnect.android.data.DevicePairingRequiredException
 import com.helpconnect.android.data.DeviceSessionRejectedException
-import com.helpconnect.android.domain.SessionInput
 import com.helpconnect.android.presentation.MainActivity
 import com.helpconnect.android.signaling.DeviceSignalingClient
 import com.helpconnect.android.signaling.IceServerConfig
@@ -41,6 +42,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 enum class SessionScreen {
     HOME,
+    AWAITING_CONFIRMATION,
     CONNECTING,
     CONNECTED,
     SHARING,
@@ -49,8 +51,11 @@ enum class SessionScreen {
 
 data class SessionUiState(
     val screen: SessionScreen = SessionScreen.HOME,
-    val status: String = "Informe o código de atendimento e a credencial temporária.",
+    val status: String = "",
+    val sessionId: String = "",
     val publicCode: String = "",
+    val clientName: String? = null,
+    val pairingCode: String? = null,
     val webrtcState: String = "aguardando",
     val error: String? = null,
     val canShare: Boolean = false,
@@ -75,6 +80,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     private val sessionGeneration = AtomicLong(0)
     @Volatile private var listener: StateListener? = null
     @Volatile private var state = SessionUiState()
+    @Volatile private var pendingKeyword = ""
     @Volatile private var signalingClient: DeviceSignalingClient? = null
     @Volatile private var publisher: WebRtcScreenPublisher? = null
     @Volatile private var iceServers: List<IceServerConfig> = emptyList()
@@ -83,6 +89,8 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     @Volatile private var operatorConnected = false
     @Volatile private var operatorWebrtcConnected = false
     @Volatile private var webrtcConnected = false
+    @Volatile private var pendingProjectionResultCode: Int? = null
+    @Volatile private var pendingProjectionData: Intent? = null
     @Volatile private var remoteControlAvailable = false
     @Volatile private var remoteControlServerBlocked = false
     private val seenRemoteCommandIds = LinkedHashSet<String>()
@@ -101,18 +109,13 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
     fun currentState(): SessionUiState = state
 
-    fun connect(publicCode: String, deviceToken: String) {
+    fun connect(keyword: String) {
         if (state.screen != SessionScreen.HOME && state.screen != SessionScreen.ENDED) {
             update(state.copy(error = "Já existe um atendimento em andamento."))
             return
         }
-        val normalizedCode = SessionInput.normalizeCode(publicCode)
-        if (!SessionInput.isValidCode(normalizedCode)) {
-            update(SessionUiState(error = "Informe um código HC válido."))
-            return
-        }
-        if (!SessionInput.isValidTicket(deviceToken)) {
-            update(SessionUiState(publicCode = normalizedCode, error = "Credencial temporária inválida."))
+        if (keyword.isBlank()) {
+            update(SessionUiState(error = "Digite a palavra-chave EUQUERO."))
             return
         }
 
@@ -126,31 +129,37 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         iceServers = emptyList()
         update(SessionUiState(
             screen = SessionScreen.CONNECTING,
-            status = "Validando sessão e credencial de uso único...",
-            publicCode = normalizedCode
+            status = "Localizando o atendimento autorizado para este aparelho..."
         ))
         startService(Intent(this@HelpConnectService, HelpConnectService::class.java))
         serviceScope.launch {
             try {
                 val api = DeviceApi(BuildConfig.API_BASE_URL)
-                val session = api.resolveSession(normalizedCode, deviceToken.trim())
+                val session = api.resolveSession(keyword, AndroidDeviceIdentity())
                 if (!isCurrent(generation)) return@launch
-                val client = DeviceSignalingClient(api.websocketUrl(), listenerFor(generation))
-                signalingClient = client
+                pendingKeyword = keyword
                 update(SessionUiState(
-                    screen = SessionScreen.CONNECTING,
-                    status = "Conectando ao atendimento autorizado...",
-                    publicCode = normalizedCode
+                    screen = SessionScreen.AWAITING_CONFIRMATION,
+                    status = "Confira o cliente e confirme antes de iniciar o atendimento.",
+                    sessionId = session.sessionId,
+                    publicCode = session.publicCode,
+                    clientName = session.clientName
                 ))
-                client.connect(session.sessionId, deviceToken.trim())
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (error: DevicePairingRequiredException) {
+                terminal.set(true)
+                pendingKeyword = ""
+                update(SessionUiState(
+                    status = "Informe este código ao atendente para vincular o aparelho uma única vez.",
+                    pairingCode = error.pairingCode
+                ))
+                stopSelf()
             } catch (error: DeviceSessionRejectedException) {
                 showConnectionSetupError(
                     generation,
-                    "Não foi possível validar este atendimento.",
-                    "A sessão ou credencial está inválida, expirada ou indisponível (HTTP ${error.statusCode}). " +
-                        "Confirme o consentimento no painel e gere uma credencial nova para o mesmo código."
+                    "Não foi possível localizar o atendimento.",
+                    error.message ?: "O aparelho ou o atendimento está indisponível."
                 )
             } catch (error: DeviceApiResponseException) {
                 showConnectionSetupError(
@@ -174,9 +183,100 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         }
     }
 
+    fun confirmSession() {
+        val candidate = state
+        val keyword = pendingKeyword
+        if (candidate.screen != SessionScreen.AWAITING_CONFIRMATION || keyword.isBlank()) return
+
+        val generation = sessionGeneration.incrementAndGet()
+        terminal.set(false)
+        update(candidate.copy(
+            screen = SessionScreen.CONNECTING,
+            status = "Registrando sua confirmação e conectando ao atendimento...",
+            error = null
+        ))
+        serviceScope.launch {
+            try {
+                val api = DeviceApi(BuildConfig.API_BASE_URL)
+                val session = api.confirmSession(keyword, candidate.sessionId, AndroidDeviceIdentity())
+                if (!isCurrent(generation)) return@launch
+                pendingKeyword = ""
+                update(SessionUiState(
+                    screen = SessionScreen.CONNECTING,
+                    status = "Confirmação registrada. Aguardando a conexão do atendente...",
+                    sessionId = session.sessionId,
+                    publicCode = session.publicCode,
+                    clientName = session.clientName
+                ))
+                val client = DeviceSignalingClient(api.websocketUrl(), listenerFor(generation))
+                signalingClient = client
+                client.connect(session.sessionId, session.deviceToken)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: DevicePairingRequiredException) {
+                terminal.set(true)
+                pendingKeyword = ""
+                update(SessionUiState(
+                    status = "Informe este código ao atendente para vincular o aparelho uma única vez.",
+                    pairingCode = error.pairingCode
+                ))
+                stopSelf()
+            } catch (error: DeviceSessionRejectedException) {
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível confirmar o atendimento.",
+                    error.message ?: "A sessão não está mais disponível."
+                )
+            } catch (error: DeviceApiResponseException) {
+                showConnectionSetupError(
+                    generation,
+                    "O backend não conseguiu registrar a confirmação.",
+                    error.message ?: "A API HelpConnect respondeu com erro."
+                )
+            } catch (error: IOException) {
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível alcançar o backend.",
+                    "Verifique se o backend e a rede estão disponíveis; depois, digite EUQUERO novamente."
+                )
+            } catch (_: Exception) {
+                showConnectionSetupError(
+                    generation,
+                    "Não foi possível iniciar a conexão.",
+                    "Verifique a configuração do aplicativo e tente novamente."
+                )
+            }
+        }
+    }
+
+    fun cancelSessionConfirmation() {
+        if (state.screen != SessionScreen.AWAITING_CONFIRMATION) return
+        pendingKeyword = ""
+        pendingProjectionResultCode = null
+        pendingProjectionData = null
+        sessionGeneration.incrementAndGet()
+        terminal.set(true)
+        update(SessionUiState(status = "Atendimento não confirmado. Nenhum compartilhamento foi iniciado."))
+        stopSelf()
+    }
+
     fun startScreenShare(resultCode: Int, permissionData: Intent) {
-        if (resultCode != Activity.RESULT_OK || !sessionJoined || !operatorConnected || terminal.get() || isSharing) {
-            update(state.copy(error = "Conecte-se a uma sessão autorizada antes de compartilhar."))
+        if (resultCode != Activity.RESULT_OK) {
+            update(state.copy(error = "Autorização de captura cancelada. Nenhuma tela foi compartilhada."))
+            return
+        }
+        if (!sessionJoined || !operatorConnected || terminal.get()) {
+            if (!terminal.get()) {
+                pendingProjectionResultCode = resultCode
+                pendingProjectionData = permissionData
+                update(state.copy(
+                    status = "Captura autorizada. Aguardando a conexão do atendente para iniciar automaticamente.",
+                    error = null
+                ))
+            }
+            return
+        }
+        if (isSharing) {
             return
         }
         val generation = sessionGeneration.get()
@@ -253,7 +353,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                             if (connectionState == "failed") {
                                 terminate(
                                     "A conexão WebRTC falhou. A captura foi interrompida.",
-                                    error = "Falha na conexão WebRTC; solicite uma nova credencial antes de reconectar."
+                                    error = "Falha na conexão WebRTC; digite EUQUERO novamente para tentar reconectar."
                                 )
                             } else {
                                 update(state.copy(
@@ -333,6 +433,9 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     fun reset() {
         sessionGeneration.incrementAndGet()
         terminal.set(false)
+        pendingKeyword = ""
+        pendingProjectionResultCode = null
+        pendingProjectionData = null
         operatorConnected = false
         operatorWebrtcConnected = false
         webrtcConnected = false
@@ -391,17 +494,23 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
             operatorConnected = true
             update(this.state.copy(
                 screen = SessionScreen.CONNECTED,
-                status = "PARABÉNS! TEMOS UMA ÓTIMA NOTÍCIA PARA VOCÊ! " +
-                    "",
+                status = "Atendente conectado. Iniciando o compartilhamento autorizado.",
                 canShare = true,
                 error = null
             ))
             updateRemoteControlAvailability()
+            val resultCode = pendingProjectionResultCode
+            val permissionData = pendingProjectionData
+            if (resultCode != null && permissionData != null) {
+                pendingProjectionResultCode = null
+                pendingProjectionData = null
+                startScreenShare(resultCode, permissionData)
+            }
         } else if (state == "disconnected" && operatorConnected) {
             operatorWebrtcConnected = false
             terminate(
                 "A conexão com o atendente foi interrompida. A transmissão foi encerrada.",
-                error = "Conexão WebSocket perdida; uma nova credencial será necessária para reconectar."
+                error = "Conexão WebSocket perdida; digite EUQUERO novamente para tentar reconectar."
             )
         }
     }
@@ -491,6 +600,9 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
     private fun terminate(message: String, error: String?) {
         if (!terminal.compareAndSet(false, true)) return
+        pendingKeyword = ""
+        pendingProjectionResultCode = null
+        pendingProjectionData = null
         Log.w(TAG, "Ending session (sharing=$isSharing, webrtc=${state.webrtcState})")
         sessionGeneration.incrementAndGet()
         isSharing = false
@@ -510,7 +622,9 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
             update(SessionUiState(
                 screen = SessionScreen.ENDED,
                 status = message,
+                sessionId = state.sessionId,
                 publicCode = state.publicCode,
+                clientName = state.clientName,
                 webrtcState = "closed",
                 error = error,
                 canShare = false
@@ -527,13 +641,16 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
     private fun showConnectionSetupError(generation: Long, status: String, error: String) {
         if (!isCurrent(generation)) return
         terminal.set(true)
+        pendingKeyword = ""
         sessionJoined = false
         operatorConnected = false
         iceServers = emptyList()
         update(SessionUiState(
             screen = SessionScreen.HOME,
             status = status,
+            sessionId = state.sessionId,
             publicCode = state.publicCode,
+            clientName = state.clientName,
             error = error
         ))
         stopSelf()

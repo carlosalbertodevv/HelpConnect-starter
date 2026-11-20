@@ -55,11 +55,11 @@
             </div>
           </section>
           <section id="sessionsView" class="hidden">
-            <div class="section-heading"><div><h2>Atendimentos recentes</h2><p>Os links são temporários e só registram consentimento explícito.</p></div><button id="newSession" type="button">+ Novo atendimento</button></div>
+            <div class="section-heading"><div><h2>Atendimentos recentes</h2><p>Crie um atendimento para um cliente com aparelho Android pareado.</p></div><button id="newSession" type="button">+ Novo atendimento</button></div>
             <div id="newSessionPanel" class="panel hidden">
-              <h2>Novo atendimento</h2><label>Nome do cliente (opcional)<input id="clientName" maxlength="100" placeholder="Ex.: João"></label>
-              <label>Vincular cliente cadastrado<select id="sessionClient"><option value="">Atendimento avulso</option></select></label>
-              <button id="createSession" type="button">Gerar link</button><p id="sessionMessage" class="message" aria-live="polite"></p><div id="generatedLink" class="generated hidden"></div>
+              <h2>Novo atendimento</h2>
+              <label>Cliente<select id="sessionClient" required><option value="">Selecione um cliente</option></select></label>
+              <button id="createSession" type="button">Criar atendimento</button><p id="sessionMessage" class="message" aria-live="polite"></p>
             </div>
             <div class="panel"><div class="tableHead"><h2>Histórico</h2><button id="refresh" class="ghost" type="button">Atualizar</button></div><div id="sessions" class="sessions" aria-live="polite"><p>Carregando...</p></div></div>
           </section>
@@ -75,6 +75,18 @@
               <div class="actions"><button id="saveClient" type="submit">Cadastrar cliente</button><button id="cancelEditClient" type="button" class="ghost hidden">Cancelar edição</button></div>
               <p id="clientMessage" class="message" aria-live="polite"></p>
             </form>
+            <section class="panel">
+              <h2>Parear aparelho Android</h2>
+              <p>Na primeira entrada, o app exibirá um código. Confira a identidade do cliente e vincule o aparelho uma única vez; depois, o cliente digita apenas EUQUERO.</p>
+              <div class="form-grid">
+                <label>Cliente<select id="pairingClient" required><option value="">Selecione um cliente</option></select></label>
+                <label>Código exibido no app<input id="pairingCode" maxlength="8" autocomplete="off" placeholder="8 caracteres hexadecimais"></label>
+              </div>
+              <div class="actions"><button id="pairDevice" type="button">Vincular aparelho</button></div>
+              <p id="devicePairingMessage" class="message" aria-live="polite"></p>
+              <h3>Aparelhos vinculados</h3>
+              <div id="devices" class="sessions" aria-live="polite"><p>Carregando...</p></div>
+            </section>
             <div class="panel"><div id="clients" class="sessions" aria-live="polite"><p>Carregando...</p></div></div>
           </section>
           <section id="settingsView" class="hidden">

@@ -315,7 +315,6 @@ footer { color: var(--subtle); font-size: 12px; text-align: center; }
   background: var(--surface-muted);
 }
 .realtime-states { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 13px; }
-.device-ticket { overflow-wrap: anywhere; color: var(--text); }
 .remote-control-panel { display: grid; gap: 10px; padding-top: 6px; }
 .remote-control-panel small { color: var(--muted); line-height: 1.5; }
 .remote-control-panel p { margin: 0; }

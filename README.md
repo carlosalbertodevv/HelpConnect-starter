@@ -1,6 +1,6 @@
 # HelpConnect — Fases 1 a 4
 
-Base do painel para atendimentos remotos autorizados: autenticação de atendentes com Supabase Auth, API Express, PostgreSQL/Prisma, cadastro de clientes, links temporários, consentimento e histórico auditável. A Fase 2 adiciona WebSocket autenticado e sinalização WebRTC.
+Base do painel para atendimentos remotos autorizados: autenticação de atendentes com Supabase Auth, API Express, PostgreSQL/Prisma, cadastro de clientes, pareamento de aparelhos, consentimento e histórico auditável. A Fase 2 adiciona WebSocket autenticado e sinalização WebRTC.
 
 As Fases 1 a 4 fornecem painel, backend, consentimento, captura/transmissão Android e interações remotas autorizadas. O consentimento inicial cobre compartilhamento e interações; a captura e a acessibilidade ainda exigem as autorizações oficiais e manuais do Android. A implementação requer validação em dispositivo físico para confirmar mídia e ações ponta a ponta.
 
@@ -25,7 +25,7 @@ npm run db:migrate
 npm run dev
 ```
 
-Sirva a pasta `frontend` por um servidor estático local (por exemplo, VS Code Live Server). O link de consentimento abre no navegador Windows por padrão em `http://localhost:5500/client.html`. Para abrir esse link no emulador, configure `PUBLIC_APP_URL=http://10.0.2.2:5500` se o servidor servir `frontend` como raiz, ou acrescente `/frontend` se servir a raiz do repositório. Não abra os HTMLs por `file://`.
+Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Server) para usar o painel e a página web legada de consentimento. O app Android não abre link nem depende de `PUBLIC_APP_URL`; a API do emulador usa `http://10.0.2.2:3001/api`. Não abra os HTMLs por `file://`.
 
 ### Executar no Android Emulator
 
@@ -39,7 +39,7 @@ Sirva a pasta `frontend` por um servidor estático local (por exemplo, VS Code L
    ```
 
    O build `debug` usa por padrão `http://10.0.2.2:3001/api`; esse endereço aponta do emulador para o host Windows. A propriedade Gradle `helpconnectApiBaseUrl` ou a variável `HELPCONNECT_API_BASE_URL` pode substituí-lo para outros ambientes de desenvolvimento.
-4. Abra o link de consentimento no navegador local do Windows. Após o consentimento, gere uma credencial Android no painel e informe o código e a credencial no app. A validação HTTP usa `POST /api/public/sessions/device-session`; a sinalização usa `ws://10.0.2.2:3001/ws`. Um ticket novo é necessário após falha ou desconexão.
+4. Cadastre o cliente e pareie o aparelho uma vez na tela **Clientes**. No primeiro uso, o app exibirá um código de pareamento; o atendente verifica a identidade do cliente e associa o código ao cadastro. Depois, crie um atendimento para esse cliente. No Android, o cliente digita somente `EUQUERO`, confere o atendimento e confirma. A captura ainda depende da autorização nativa do Android. A validação usa `POST /api/public/sessions/device-session` e `POST /api/public/sessions/device-consent`; a sinalização usa `ws://10.0.2.2:3001/ws`.
 
 Builds release exigem uma URL HTTPS fornecida por `-PhelpconnectApiBaseUrl="https://api.seudominio.com/api"` ou `HELPCONNECT_API_BASE_URL`; HTTP permanece desabilitado em release. O backend aceita as origens web listadas em `APP_ORIGINS` (ou `APP_ORIGIN` legado); CORS não é exigido pelo cliente nativo Android. A compilação e a conexão de sinalização não comprovam a transmissão: valide frames reais no painel antes de considerar o fluxo WebRTC aprovado.
 
@@ -65,7 +65,7 @@ Crie o usuário atendente no Supabase Auth. O perfil correspondente é sincroniz
 - Autorização por atendente nos dados e nas ações de clientes/sessões.
 - CORS restrito às origens locais listadas em `APP_ORIGINS` (ou `APP_ORIGIN` legado), Helmet, validação Zod, rate limiting e exigência de HTTPS quando `NODE_ENV=production`.
 - Migrations versionadas e testes automatizados para geração/hash de tokens e formato do código.
-- WebSocket com autenticação Supabase para atendentes, credenciais Android temporárias de uso único, autorização por sessão/consentimento, sinalização WebRTC e encerramento por expiração/revogação.
+- WebSocket com autenticação Supabase para atendentes, tickets Android temporários emitidos após consentimento, autorização por sessão/consentimento, sinalização WebRTC e encerramento por expiração/revogação.
 - Configuração STUN/TURN opcional com credenciais temporárias; nenhuma senha TURN no frontend.
 
 ## Rotas principais
@@ -73,15 +73,19 @@ Crie o usuário atendente no Supabase Auth. O perfil correspondente é sincroniz
 - `GET /api/health` — verificação básica do processo.
 - `GET /api/sessions/dashboard` — indicadores do atendente autenticado.
 - `GET /api/sessions` — histórico do atendente autenticado.
-- `POST /api/sessions` — cria sessão; retorna link e código.
+- `POST /api/sessions` — cria sessão pendente para um cliente cadastrado; retorna código.
 - `POST /api/sessions/:id/end` — encerra sessão própria.
 - `GET/POST/PATCH/DELETE /api/clients` — lista, cadastra, atualiza e arquiva clientes próprios.
-- `POST /api/public/sessions/lookup` — valida link, recebendo `{ "token": "..." }`.
-- `POST /api/public/sessions/device-session` — resolve código público e ticket temporário em um `sessionId`; não consome o ticket.
+- `GET /api/devices` — lista aparelhos pareados aos clientes do atendente.
+- `POST /api/devices/pair` — associa um código de pareamento temporário a um cliente próprio.
+- `POST /api/devices/:id/revoke` — revoga o pareamento e encerra sessões ativas do aparelho.
+- `POST /api/public/sessions/lookup` — valida link de consentimento web legado, recebendo `{ "token": "..." }`.
+- `POST /api/public/sessions/device-challenge` — emite desafio curto para prova criptográfica do aparelho.
+- `POST /api/public/sessions/device-session` — valida `EUQUERO`, a chave do aparelho pareado e localiza a única sessão ativa do cliente.
+- `POST /api/public/sessions/device-consent` — registra a confirmação explícita no Android e emite ticket WebSocket de uso único.
 - `POST /api/public/sessions/consent` — registra consentimento explícito.
 - `POST /api/public/sessions/reject` — registra recusa.
 - `POST /api/public/sessions/revoke` — revoga consentimento e encerra a comunicação.
-- `POST /api/sessions/:id/device-ticket` — emite credencial Android curta, de uso único e somente após consentimento.
 - `GET /api/sessions/:id/ice-servers` — configura ICE; credenciais TURN são temporárias.
 - `ws(s)://<api-host>/ws` — autenticação/participação e sinalização da sessão.
 
@@ -97,7 +101,7 @@ npm run prisma:generate
 
 Em desenvolvimento, aplique migrations com `npm run db:migrate`; em produção, use `npm run db:deploy`.
 
-Se você já tinha um banco da versão anterior sem migrations versionadas no repositório, faça backup e confira o histórico/schema antes de aplicar esta cadeia de migrations; não marque migrations como aplicadas sem verificar equivalência.
+`db:migrate` e `db:deploy` alteram o banco apontado por `DATABASE_URL`. Confira o destino antes de executar qualquer migration; não aplique a migration de pareamento em banco remoto/compartilhado sem autorização explícita. Se você já tinha um banco da versão anterior sem migrations versionadas no repositório, faça backup e confira o histórico/schema antes de aplicar esta cadeia; não marque migrations como aplicadas sem verificar equivalência.
 
 ## Variáveis de ambiente do backend
 
@@ -115,7 +119,7 @@ O rate limiter incluído mantém contadores em memória por processo. Em produç
 
 O projeto Android nativo fica em `android/`. Consulte [docs/FASE3.md](./docs/FASE3.md) para o fluxo completo, configuração e limitações; [docs/ANDROID.md](./docs/ANDROID.md) para compilar e instalar; [docs/MEDIAPROJECTION.md](./docs/MEDIAPROJECTION.md) para permissões e captura; [docs/WEBRTC-ANDROID.md](./docs/WEBRTC-ANDROID.md) para mídia/sinalização; e [docs/TESTES-FASE3.md](./docs/TESTES-FASE3.md) para validação.
 
-No build Debug, o app abre em modo de desenvolvimento para navegação local sem sessão; esse modo não cria tickets, simula consentimento nem inicia captura/transmissão. O fluxo real continua disponível mediante código público e ticket de uso único gerado pelo atendente. Release não inclui o modo de demonstração e continua exigindo as autorizações da sessão e do diálogo oficial do Android antes de capturar a tela. Esta implementação ainda precisa de validação ponta a ponta em dispositivo físico.
+No build Debug, o app abre diretamente na entrada por palavra-chave. O primeiro uso de um aparelho exige pareamento aprovado pelo atendente; depois, `EUQUERO` localiza o atendimento vinculado ao cliente. A confirmação no app registra o consentimento, e a captura continua exigindo autorização oficial do Android. A chave privada de identidade é gerada no Android Keystore e nunca é embutida no APK. A nova migration de pareamento está versionada, mas não foi aplicada a nenhum banco remoto.
 
 ## Escopo das fases
 

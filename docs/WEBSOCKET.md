@@ -16,9 +16,9 @@ O servidor valida o token com Supabase e compara o proprietário da sessão. O a
 {"type":"join_session","sessionId":"<uuid>","deviceToken":"<credencial-de-uso-unico>"}
 ```
 
-A credencial de dispositivo é emitida pelo endpoint autenticado `POST /api/sessions/:id/device-ticket`, apenas para atendimentos próprios com consentimento vigente. Ela expira em `DEVICE_TICKET_TTL_SECONDS` (padrão 120 s), só pode ser consumida uma vez e é invalidada ao reiniciar o processo. Não é o token do link do cliente.
+A credencial de dispositivo é emitida automaticamente depois que um aparelho pareado confirma um atendimento. Ela expira em `DEVICE_TICKET_TTL_SECONDS` (padrão 120 s), só pode ser consumida uma vez e é invalidada ao reiniciar o processo.
 
-Antes do handshake, o app envia `POST /api/public/sessions/device-session` com `{ "publicCode": "HC-...", "deviceToken": "..." }`. O backend só retorna o `sessionId` se o ticket ainda for válido e estiver vinculado ao código informado e a uma sessão ativa, não expirada e consentida. Essa consulta não consome o ticket; o consumo ocorre uma única vez no `join_session`. O código público não é credencial nem substitui o ticket. Transfira o ticket ao cliente por canal seguro.
+Antes do handshake, o app obtém um desafio em `POST /api/public/sessions/device-challenge` e envia `EUQUERO`, chave pública, desafio e assinatura a `POST /api/public/sessions/device-session`. O backend valida a assinatura com a chave pública pareada e localiza somente uma sessão do cliente associado. Após a confirmação explícita no Android, `POST /api/public/sessions/device-consent` registra o consentimento e emite o ticket de uso único para o `join_session`.
 
 Uma entrada aceita retorna `join_session` com `participant`, `nextSequence` e um nonce aleatório exclusivo da conexão. A entrada do dispositivo também inclui `iceServers` com TURN temporário, se configurado. Uma segunda conexão do mesmo papel substitui a anterior. Cada mensagem depois da entrada tem esse `connectionNonce` e um `sequence` inteiro crescente, mantido por sessão/papel durante a vida do processo. O nonce impede replay de mensagens capturadas em uma conexão anterior.
 

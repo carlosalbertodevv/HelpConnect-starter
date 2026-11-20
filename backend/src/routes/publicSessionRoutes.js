@@ -1,17 +1,27 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../db.js";
+import { config } from "../config.js";
 import { hashToken } from "../utils/tokens.js";
-import { resolveDeviceTicketSession } from "../services/deviceTicketSessions.js";
+import { isValidEntryKeyword, findDeviceSessions } from "../services/deviceSessions.js";
+import { createOrRefreshPairingRequest } from "../services/devicePairing.js";
+import { createDeviceChallenge, verifyDeviceProof } from "../services/deviceIdentity.js";
+import { issueDeviceTicket, revokeDeviceTickets } from "../services/deviceTickets.js";
+import { findAuthorizedSession } from "../services/sessionAccess.js";
 import { terminateSessionConnections } from "../websocket/sessionRegistry.js";
-import { revokeDeviceTickets } from "../services/deviceTickets.js";
 
 const router = Router();
 const tokenSchema = z.string().min(30).max(100);
 const lookupSchema = z.object({ token: tokenSchema }).strict();
-const deviceSessionSchema = z.object({
-  publicCode: z.string().regex(/^HC-[A-F0-9]{12}$/),
-  deviceToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+const deviceProofSchema = z.object({
+  keyword: z.string().refine(isValidEntryKeyword),
+  publicKey: z.string().min(100).max(400),
+  challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  signature: z.string().regex(/^[A-Za-z0-9_-]{80,120}$/)
+}).strict();
+const deviceConsentSchema = deviceProofSchema.extend({
+  sessionId: z.uuid(),
+  accepted: z.literal(true)
 }).strict();
 const consentSchema = z.object({
   token: tokenSchema,
@@ -19,18 +29,145 @@ const consentSchema = z.object({
 }).strict();
 const activeStatuses = ["PENDING", "CONSENTED", "CONNECTING", "ACTIVE"];
 
+router.post("/device-challenge", (_req, res, next) => {
+  try {
+    res.json({ challenge: createDeviceChallenge() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function authenticateDevice(res, parsed) {
+  if (!verifyDeviceProof(parsed, Date.now())) {
+    res.status(401).json({ error: "Autenticação do aparelho inválida ou expirada." });
+    return null;
+  }
+  const result = await createOrRefreshPairingRequest(prisma, parsed.publicKey);
+  if (result.status === "pending") {
+    res.status(428).json({
+      error: "Este aparelho precisa ser vinculado ao cadastro do cliente.",
+      pairingCode: result.pairingCode,
+      expiresAt: result.expiresAt
+    });
+    return null;
+  }
+  if (result.status === "revoked") {
+    res.status(403).json({ error: "O acesso deste aparelho foi revogado." });
+    return null;
+  }
+  return result.device;
+}
+
 router.post("/device-session", async (req, res, next) => {
   try {
-    const parsed = deviceSessionSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "Código ou credencial inválida." });
+    const parsed = deviceProofSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Palavra-chave ou autenticação inválida." });
+    const device = await authenticateDevice(res, parsed.data);
+    if (!device) return;
 
-    const session = await resolveDeviceTicketSession(
-      prisma,
-      parsed.data.publicCode,
-      parsed.data.deviceToken
-    );
-    if (!session) return res.status(404).json({ error: "Sessão ou credencial indisponível." });
-    res.json(session);
+    const sessions = await findDeviceSessions(prisma, device.clientId, device.id);
+    if (!sessions.length) return res.status(404).json({ error: "Não há atendimento ativo para este cliente." });
+    if (sessions.length > 1) {
+      return res.status(409).json({ error: "Há mais de um atendimento ativo para este cliente. Peça ao atendente para encerrar o excedente." });
+    }
+    const session = sessions[0];
+    if (session.status !== "PENDING" && !await findAuthorizedSession(prisma, session.id)) {
+      return res.status(404).json({ error: "Atendimento sem consentimento, expirado ou encerrado." });
+    }
+    const bound = await prisma.remoteSession.updateMany({
+      where: {
+        id: session.id,
+        clientId: device.clientId,
+        OR: [{ deviceId: null }, { deviceId: device.id }],
+        status: session.status,
+        expiresAt: { gt: new Date() }
+      },
+      data: { deviceId: device.id }
+    });
+    if (!bound.count) return res.status(409).json({ error: "O atendimento foi alterado. Tente novamente." });
+    res.json({
+      sessionId: session.id,
+      publicCode: session.publicCode,
+      clientName: session.clientName,
+      status: session.status,
+      expiresAt: session.expiresAt
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/device-consent", async (req, res, next) => {
+  try {
+    const parsed = deviceConsentSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Confirmação ou autenticação inválida." });
+    const device = await authenticateDevice(res, parsed.data);
+    if (!device) return;
+
+    const session = await prisma.remoteSession.findFirst({
+      where: {
+        id: parsed.data.sessionId,
+        clientId: device.clientId,
+        deviceId: device.id,
+        status: { in: activeStatuses },
+        expiresAt: { gt: new Date() }
+      },
+      select: { id: true, status: true }
+    });
+    if (!session) return res.status(404).json({ error: "Atendimento indisponível para este aparelho." });
+
+    if (session.status === "PENDING") {
+      const now = new Date();
+      try {
+        const consented = await prisma.$transaction(async (tx) => {
+          const updated = await tx.remoteSession.updateMany({
+            where: {
+              id: session.id,
+              clientId: device.clientId,
+              deviceId: device.id,
+              status: "PENDING",
+              expiresAt: { gt: now }
+            },
+            data: { status: "CONSENTED", consentedAt: now }
+          });
+          if (!updated.count) return false;
+          await tx.sessionPermission.create({
+            data: {
+              sessionId: session.id,
+              permission: "SUPPORT_SESSION",
+              granted: true,
+              grantedAt: now
+            }
+          });
+          await tx.sessionLog.create({
+            data: { sessionId: session.id, event: "SUPPORT_CONSENT_GRANTED_ANDROID" }
+          });
+          return true;
+        });
+        if (!consented) return res.status(409).json({ error: "O atendimento foi alterado. Tente novamente." });
+      } catch (error) {
+        if (error?.code === "P2002") {
+          return res.status(409).json({ error: "Este cliente já possui outro atendimento autorizado ativo." });
+        }
+        throw error;
+      }
+    } else if (!await findAuthorizedSession(prisma, session.id)) {
+      return res.status(404).json({ error: "Atendimento sem consentimento válido." });
+    }
+
+    const authorized = await findAuthorizedSession(prisma, session.id);
+    if (!authorized) return res.status(404).json({ error: "Atendimento indisponível." });
+    const ticket = issueDeviceTicket(session.id, config.deviceTicketTtlSeconds);
+    await prisma.sessionLog.create({
+      data: { sessionId: session.id, event: "DEVICE_TICKET_ISSUED" }
+    });
+    res.json({
+      sessionId: authorized.id,
+      publicCode: authorized.publicCode,
+      clientName: authorized.clientName,
+      expiresAt: authorized.expiresAt,
+      deviceToken: ticket.token
+    });
   } catch (error) {
     next(error);
   }
@@ -96,32 +233,40 @@ router.post("/consent", async (req, res, next) => {
     }
 
     const now = new Date();
-    const updated = await prisma.$transaction(async (tx) => {
-      const result = await tx.remoteSession.updateMany({
-        where: {
-          id: session.id,
-          status: "PENDING",
-          expiresAt: { gt: now }
-        },
-        data: {
-          status: "CONSENTED",
-          consentedAt: now
-        }
+    let updated;
+    try {
+      updated = await prisma.$transaction(async (tx) => {
+        const result = await tx.remoteSession.updateMany({
+          where: {
+            id: session.id,
+            status: "PENDING",
+            expiresAt: { gt: now }
+          },
+          data: {
+            status: "CONSENTED",
+            consentedAt: now
+          }
+        });
+        if (!result.count) return false;
+        await tx.sessionPermission.create({
+          data: {
+            sessionId: session.id,
+            permission: "SUPPORT_SESSION",
+            granted: true,
+            grantedAt: now
+          }
+        });
+        await tx.sessionLog.create({
+          data: { sessionId: session.id, event: "SUPPORT_CONSENT_GRANTED" }
+        });
+        return true;
       });
-      if (!result.count) return false;
-      await tx.sessionPermission.create({
-        data: {
-          sessionId: session.id,
-          permission: "SUPPORT_SESSION",
-          granted: true,
-          grantedAt: now
-        }
-      });
-      await tx.sessionLog.create({
-        data: { sessionId: session.id, event: "SUPPORT_CONSENT_GRANTED" }
-      });
-      return true;
-    });
+    } catch (error) {
+      if (error?.code === "P2002") {
+        return res.status(409).json({ error: "Este cliente já possui outro atendimento autorizado ativo." });
+      }
+      throw error;
+    }
     if (!updated) return res.status(404).json({ error: "Sessão indisponível." });
     res.json({
       ok: true,

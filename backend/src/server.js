@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { prisma } from "./db.js";
 import sessionRoutes from "./routes/sessionRoutes.js";
 import clientRoutes from "./routes/clientRoutes.js";
+import deviceRoutes from "./routes/deviceRoutes.js";
 import publicSessionRoutes from "./routes/publicSessionRoutes.js";
 import { createSignalingServer } from "./websocket/signalingServer.js";
 import { registerSessionTerminator } from "./websocket/sessionRegistry.js";
@@ -38,7 +39,7 @@ const apiLimiter = rateLimit({
 });
 const publicSessionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: 30,
+  limit: 120,
   standardHeaders: "draft-8",
   legacyHeaders: false,
   message: { error: "Muitas tentativas. Tente novamente mais tarde." }
@@ -49,6 +50,7 @@ app.use("/api/public/sessions", publicSessionLimiter);
 app.get("/api/health", (_req, res) => res.json({ ok: true, service: "HelpConnect API" }));
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/clients", clientRoutes);
+app.use("/api/devices", deviceRoutes);
 app.use("/api/public/sessions", publicSessionRoutes);
 
 app.use((err, _req, res, _next) => {

@@ -7,7 +7,7 @@
 - Android 8.0/API 26 ou superior.
 - Backend HelpConnect Fases 1/2/3 em execução; produção deve usar HTTPS/WSS.
 
-O app usa Kotlin, Kotlin DSL, AndroidX, Material Components, OkHttp 4.12.0, Coroutines 1.10.2 e WebRTC Android 1.3.10 (`io.getstream:stream-webrtc-android`). O WebRTC selecionado publica AAR no Maven Central; a distribuição declara suporte Android API 21+. O projeto configura minSdk 26, compileSdk 36 e targetSdk 35. Compilar contra 36 não opta automaticamente a aplicação pelas mudanças de comportamento de target 36.
+O app usa Kotlin, Kotlin DSL, AndroidX, Material Components, OkHttp 4.12.0, Coroutines 1.10.2 e WebRTC Android 1.3.10 (`io.getstream:stream-webrtc-android`). A identidade do aparelho usa uma chave EC P-256 criada no Android Keystore; a chave privada não é armazenada no APK nem em preferências do app. O projeto configura minSdk 26, compileSdk 36 e targetSdk 35.
 
 ## Configuração da API
 
@@ -39,23 +39,21 @@ cd android
 .\gradlew.bat assembleDebug installDebug
 ```
 
-O backend escuta em `0.0.0.0:3001` por padrão; o VS Code Live Server também fica configurado em `0.0.0.0:5500`. Se necessário, permita Node.js na rede privada do Firewall do Windows. Por padrão, o link de consentimento abre no navegador Windows em `http://localhost:5500/client.html`, enquanto o app Android usa `10.0.2.2` para acessar a API. Se preferir abrir o link no navegador do emulador, altere `PUBLIC_APP_URL` para `http://10.0.2.2:5500` (raiz `frontend`) e use `APP_ORIGINS` para permitir essa origem. A URL da API no frontend muda com o hostname; CORS não é exigido pelo cliente nativo. Abra a pasta `android/` no Android Studio para sincronizar Gradle, executar testes e implantar em emulador/dispositivo. Não é necessário configurar Supabase Auth no app: o dispositivo usa somente o ticket temporário.
+O backend escuta em `0.0.0.0:3001` por padrão. O app Android usa `10.0.2.2` para acessar a API no emulador; não precisa abrir link nem configurar `PUBLIC_APP_URL`. O frontend web ainda pode usar a página legada de consentimento em `client.html`, mas esse fluxo não é usado pelo app Android. Abra `android/` no Android Studio para sincronizar Gradle, executar testes e instalar em emulador/dispositivo. Não é necessário configurar Supabase Auth no app: a identidade é uma chave gerada no Android Keystore, e cada requisição é autenticada por desafio assinado.
 
 ## Uso
 
-No build `debug`, a tela inicial identifica claramente o modo de desenvolvimento. **Iniciar teste** abre uma tela local para navegação; ela não cria sessões/tickets, não simula consentimento, não pede autorização de captura e não inicia WebRTC. Para validar o fluxo real no Debug, escolha **Conectar a uma sessão autorizada** e use credenciais válidas do backend.
+O app abre diretamente em um único campo. Um aparelho novo mostra um código de pareamento após a primeira tentativa; o atendente verifica o cliente e associa o código uma única vez na tela **Clientes**. Esse pareamento não concede acesso a atendimentos por si só.
 
-O build `release` não contém esse modo: abre diretamente a entrada de sessão e exige código e credencial válidos. A disponibilidade da demonstração depende exclusivamente de `BuildConfig.DEBUG`, não de uma opção do usuário ou de configuração recebida da API.
+1. Cadastre o cliente e pareie o aparelho uma vez. O atendente deve confirmar a identidade do cliente antes de associá-lo.
+2. No painel, crie um atendimento para esse cliente cadastrado.
+3. No app já pareado, o cliente digita `EUQUERO`. O backend valida a palavra-chave e a assinatura da chave privada do aparelho, e só localiza a sessão ativa do cliente pareado.
+4. Confira o nome do cliente e o código do atendimento apresentados no app; confirme ou cancele.
+5. Aguarde o atendente conectar a sinalização; confirme o diálogo oficial do Android para `MediaProjection` para iniciar a captura.
+6. Se o serviço de acessibilidade ainda não estiver ativo, toque em **Configurar acessibilidade** e habilite HelpConnect manualmente nas configurações. O compartilhamento pode continuar sem interações; o app não ativa o serviço automaticamente.
+7. O app e a notificação persistente permitem interromper o compartilhamento. O atendente pode encerrar a sessão ou revogar o pareamento no painel.
 
-1. No painel, aguarde o consentimento e gere um ticket Android para a sessão.
-2. Transfira código e ticket por um canal privado/seguro.
-3. No app, abra **Conectar a uma sessão autorizada**, informe ambos e valide. A credencial é removida do campo após o envio.
-4. Aguarde o atendente conectar a sinalização.
-5. Toque em **Sim, compartilhar tela** e aceite o diálogo oficial do Android para `MediaProjection`.
-6. Se o serviço de acessibilidade ainda não estiver ativo, toque em **Configurar acessibilidade** e habilite HelpConnect manualmente nas configurações. O compartilhamento de tela pode continuar sem interações; o app não ativa o serviço automaticamente.
-7. Quando o vídeo/WebRTC e a acessibilidade estiverem ativos, as interações são habilitadas automaticamente, sem outra solicitação ou aprovação. O app e a notificação persistente permitem interromper o compartilhamento; revogue o consentimento no link para encerrar toda a sessão.
-
-Ticket de uso único e código não devem ser incluídos em logs, capturas de suporte ou mensagens públicas. Se a tentativa falhar ou a rede cair, gere novo ticket no painel.
+O código de pareamento é temporário e de uso único. O ticket WebSocket é criado automaticamente depois da confirmação e permanece de uso único. Se houver mais de um atendimento ativo para o cliente, o app não escolherá um deles: o atendente deve encerrar os excedentes. O build Debug executa esse mesmo fluxo real; ele não simula consentimento nem inicia captura automaticamente.
 
 ## Permissões
 
