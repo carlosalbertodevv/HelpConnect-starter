@@ -19,13 +19,15 @@ if (isProduction && supabaseUrl.protocol !== "https:") {
   throw new Error("SUPABASE_URL must use HTTPS in production.");
 }
 
-const legacyAppOrigin = process.env.APP_ORIGIN || "http://localhost:5500";
+const renderExternalUrl = process.env.RENDER_EXTERNAL_URL;
+const legacyAppOrigin = process.env.APP_ORIGIN || renderExternalUrl || "http://localhost:5500";
+const renderOrigins = renderExternalUrl ? [renderExternalUrl] : [];
 const configuredOrigins = process.env.APP_ORIGINS
-  ? process.env.APP_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean)
+  ? [...process.env.APP_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean), ...renderOrigins]
   : isProduction
-    ? [legacyAppOrigin]
+    ? [legacyAppOrigin, ...renderOrigins]
     : [legacyAppOrigin, "http://localhost:5500", "http://127.0.0.1:5500", "http://10.0.2.2:5500"];
-const configuredPublicUrl = process.env.PUBLIC_APP_URL || "http://localhost:5500";
+const configuredPublicUrl = process.env.PUBLIC_APP_URL || (isProduction ? renderExternalUrl : null) || "http://localhost:5500";
 let appOrigins;
 let appOrigin;
 let publicAppUrl;

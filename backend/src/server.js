@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -17,7 +18,15 @@ import { supabase } from "./supabase.js";
 
 const app = express();
 app.set("trust proxy", config.trustProxy);
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      scriptSrc: ["'self'", "https://cdn.jsdelivr.net"],
+      connectSrc: ["'self'", "https://*.supabase.co", "wss://*.supabase.co", "ws:", "wss:"],
+      upgradeInsecureRequests: config.requireHttps ? [] : null
+    }
+  }
+}));
 app.use(cors({
   origin: config.appOrigins,
   methods: ["GET", "POST", "PATCH", "DELETE"],
@@ -44,6 +53,7 @@ const publicSessionLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Muitas tentativas. Tente novamente mais tarde." }
 });
+const frontendDirectory = fileURLToPath(new URL("../../frontend/", import.meta.url));
 app.use("/api", apiLimiter);
 app.use("/api/public/sessions", publicSessionLimiter);
 
@@ -52,6 +62,7 @@ app.use("/api/sessions", sessionRoutes);
 app.use("/api/clients", clientRoutes);
 app.use("/api/devices", deviceRoutes);
 app.use("/api/public/sessions", publicSessionRoutes);
+app.use(express.static(frontendDirectory));
 
 app.use((err, _req, res, _next) => {
   console.error(err);

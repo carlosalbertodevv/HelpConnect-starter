@@ -48,8 +48,8 @@ O backend escuta em `0.0.0.0:3001` por padrão; mantenha-o em execução no comp
 O app abre diretamente em um único campo. Um aparelho novo mostra um código de pareamento após a primeira tentativa; o atendente verifica o cliente e associa o código uma única vez na tela **Clientes**. Esse pareamento não concede acesso a atendimentos por si só.
 
 1. Cadastre o cliente e pareie o aparelho uma vez. O atendente deve confirmar a identidade do cliente antes de associá-lo.
-2. No painel, crie um atendimento para esse cliente cadastrado.
-3. No app já pareado, o cliente digita `EUQUERO`. O backend valida a palavra-chave e a assinatura da chave privada do aparelho, e só localiza a sessão ativa do cliente pareado.
+2. No app, digite `EUQUERO`; se não houver atendimento ativo, o backend cria um para o cliente vinculado.
+3. No app já pareado, o cliente digita `EUQUERO`. O backend valida a palavra-chave e a assinatura da chave privada do aparelho; se não houver atendimento ativo, cria um para o cliente pareado.
 4. Confira o nome do cliente e o código do atendimento apresentados no app; confirme ou cancele.
 5. Aguarde o atendente conectar a sinalização; confirme o diálogo oficial do Android para `MediaProjection` para iniciar a captura.
 6. Se o serviço de acessibilidade ainda não estiver ativo, toque em **Configurar acessibilidade** e habilite HelpConnect manualmente nas configurações. O compartilhamento pode continuar sem interações; o app não ativa o serviço automaticamente.

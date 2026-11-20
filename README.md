@@ -25,12 +25,12 @@ npm run db:migrate
 npm run dev
 ```
 
-Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Server) para usar o painel e a página web legada de consentimento. O app Android não abre link nem depende de `PUBLIC_APP_URL`; seleciona `http://10.0.2.2:3001/api` no emulador e o IP LAN do computador no celular físico (ambos na mesma Wi-Fi). Não abra os HTMLs por `file://`.
+O backend também serve `frontend/` na raiz do mesmo domínio, então em produção o painel e a API compartilham HTTPS/WSS. Em desenvolvimento, pode abrir o painel pelo backend em `http://localhost:3001` ou usar um servidor estático local. O app Android não abre link nem depende de `PUBLIC_APP_URL`; seleciona `http://10.0.2.2:3001/api` no emulador e o IP LAN do computador no celular físico (ambos na mesma Wi-Fi). Não abra os HTMLs por `file://`.
 
 ### Executar no Android Emulator
 
 1. Inicie o backend na raiz do projeto com `npm run dev`. Por padrão, ele escuta em `0.0.0.0:3001`; no Windows, confirme que `http://localhost:3001/api/health` responde. Se o Firewall do Windows bloquear a conexão, permita o Node.js na rede privada local.
-2. Sirva o `frontend` com o VS Code Live Server. O painel no navegador Windows continua usando `http://localhost:3001/api`; no navegador do emulador, `frontend/config.js` seleciona `http://10.0.2.2:3001/api`.
+2. Abra `http://localhost:3001` para usar o painel servido pelo backend. Se usar VS Code Live Server, `frontend/config.js` aponta para a API local; no navegador do emulador, seleciona `http://10.0.2.2:3001/api`.
 3. Inicie um Android Emulator e execute:
 
    ```powershell
@@ -39,7 +39,7 @@ Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Ser
    ```
 
    O build `debug` seleciona a API do emulador (`10.0.2.2`) ou do celular físico (IP LAN detectado ao compilar). Se a detecção não corresponder à sua Wi-Fi, informe `-PhelpconnectLanApiBaseUrl="http://IP_DO_COMPUTADOR:3001/api"`. No Windows, permita Node.js/porta TCP 3001 na rede privada do Firewall.
-4. Cadastre o cliente e pareie o aparelho uma vez na tela **Clientes**. No primeiro uso, o app exibirá um código de pareamento; o atendente verifica a identidade do cliente e associa o código ao cadastro. Depois, crie um atendimento para esse cliente. No Android, o cliente digita somente `EUQUERO`, confere o atendimento e confirma. A captura ainda depende da autorização nativa do Android. A validação usa `POST /api/public/sessions/device-session` e `POST /api/public/sessions/device-consent`; a sinalização usa o host correspondente (`10.0.2.2` no emulador ou IP LAN no celular).
+4. Cadastre o cliente e pareie o aparelho uma vez na tela **Clientes**. No primeiro uso, o app exibirá um código de pareamento; o atendente verifica a identidade do cliente e associa o código ao cadastro. Depois, o cliente digita `EUQUERO`; o backend cria um atendimento se não houver um ativo, e o cliente confirma no app. A captura ainda depende da autorização nativa do Android. A validação usa `POST /api/public/sessions/device-session` e `POST /api/public/sessions/device-consent`; a sinalização usa o host correspondente (`10.0.2.2` no emulador ou IP LAN no celular).
 
 Builds release exigem uma URL HTTPS fornecida por `-PhelpconnectApiBaseUrl="https://api.seudominio.com/api"` ou `HELPCONNECT_API_BASE_URL`; HTTP permanece desabilitado em release. O backend aceita as origens web listadas em `APP_ORIGINS` (ou `APP_ORIGIN` legado); CORS não é exigido pelo cliente nativo Android. A compilação e a conexão de sinalização não comprovam a transmissão: valide frames reais no painel antes de considerar o fluxo WebRTC aprovado.
 
@@ -108,8 +108,8 @@ Em desenvolvimento, aplique migrations com `npm run db:migrate`; em produção, 
 Veja `.env.example`. `DATABASE_URL`, `SUPABASE_URL` e `SUPABASE_ANON_KEY` são obrigatórias. Em produção:
 
 - Defina `NODE_ENV=production`.
-- Use URLs HTTPS em `APP_ORIGINS` (ou `APP_ORIGIN`) e `PUBLIC_APP_URL`.
-- Configure `frontend/config.js` com a URL HTTPS da API e use `sslmode=require` na conexão PostgreSQL quando o provedor oferecer TLS.
+- Se definir `APP_ORIGINS`, `APP_ORIGIN` ou `PUBLIC_APP_URL` manualmente, use URLs HTTPS; no Render, os valores padrao usam `RENDER_EXTERNAL_URL`.
+- O Render fornece `RENDER_EXTERNAL_URL`; o painel é servido no mesmo domínio e essa origem é aceita para CORS e WebSocket. Configure `APP_ORIGINS` apenas para domínios adicionais e use `sslmode=require` na conexão PostgreSQL quando o provedor oferecer TLS.
 - Configure o proxy reverso para encaminhar HTTPS e defina `TRUST_PROXY=1` (ou a quantidade exata de saltos confiáveis) somente quando a API estiver atrás de proxy(s) que sobrescrevam `X-Forwarded-Proto` e `X-Forwarded-For`.
 - Restrinja firewall, origem web e acesso ao PostgreSQL. TLS deve terminar num proxy reverso confiável; não exponha a API sem HTTPS.
 

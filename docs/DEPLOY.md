@@ -4,20 +4,17 @@
 
 - Use Node.js 20+, PostgreSQL gerenciado, HTTPS e WSS.
 - Configure `DATABASE_URL` com TLS.
-- Defina `NODE_ENV=production`, `APP_ORIGINS` (ou `APP_ORIGIN`) e `PUBLIC_APP_URL` em HTTPS. Em `APP_ORIGINS`, liste somente origens confiáveis separadas por vírgula.
+- Defina `NODE_ENV=production` e configure `DATABASE_URL`, `SUPABASE_URL` e `SUPABASE_ANON_KEY`. No Render, `RENDER_EXTERNAL_URL` é incluída automaticamente como origem do painel e como URL pública, caso `APP_ORIGINS`, `APP_ORIGIN` ou `PUBLIC_APP_URL` não sejam informadas.
+- Se o painel estiver em outro domínio, defina `APP_ORIGINS` com as origens confiáveis em HTTPS e `PUBLIC_APP_URL` com a URL HTTPS desse painel.
 - Configure `TRUST_PROXY` com a quantidade real de proxies confiaveis.
 - Configure COTURN quando NAT/firewall exigir relay.
 - Execute migrations com `npm run db:deploy`.
 
 ## Painel
 
-Configure `frontend/config.js` com:
+O backend serve o painel e `client.html` na raiz do mesmo domínio da API. Assim, `frontend/config.js` seleciona automaticamente `/api` em produção. Para desenvolvimento local, ele mantém a API em `localhost:3001` ou `10.0.2.2:3001`.
 
-- URL HTTPS do projeto Supabase.
-- Chave anon/publishable do Supabase.
-- URL da API, terminando em `/api`.
-
-Nunca use `service_role` no navegador.
+O arquivo contém a URL e a chave anon/publishable do Supabase. Nunca use `service_role` no navegador.
 
 ## Android
 
