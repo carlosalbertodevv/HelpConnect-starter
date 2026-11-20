@@ -1,12 +1,38 @@
+import java.net.Inet4Address
+import java.net.NetworkInterface
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-val configuredApiUrl = providers.gradleProperty("helpconnectApiBaseUrl")
+val sharedApiUrl = providers.gradleProperty("helpconnectApiBaseUrl")
     .orElse(providers.environmentVariable("HELPCONNECT_API_BASE_URL"))
+val detectedLanAddress = runCatching {
+    NetworkInterface.getNetworkInterfaces().toList()
+        .filter { it.isUp && !it.isLoopback }
+        .sortedByDescending {
+            it.displayName.contains("wi-fi", ignoreCase = true) ||
+                it.displayName.contains("wireless", ignoreCase = true)
+        }
+        .flatMap { it.inetAddresses.toList() }
+        .filterIsInstance<Inet4Address>()
+        .firstOrNull {
+            it.isSiteLocalAddress && !it.isLoopbackAddress && !it.hostAddress.startsWith("169.254.")
+        }
+        ?.hostAddress
+}.getOrNull()
+
+val emulatorApiUrl = providers.gradleProperty("helpconnectEmulatorApiBaseUrl")
+    .orElse(providers.environmentVariable("HELPCONNECT_EMULATOR_API_BASE_URL"))
+    .orElse(sharedApiUrl)
     .getOrElse("http://10.0.2.2:3001/api")
-val escapedApiUrl = configuredApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")
+val lanApiUrl = providers.gradleProperty("helpconnectLanApiBaseUrl")
+    .orElse(providers.environmentVariable("HELPCONNECT_LAN_API_BASE_URL"))
+    .orElse(sharedApiUrl)
+    .getOrElse(detectedLanAddress?.let { "http://$it:3001/api" } ?: "http://10.0.2.2:3001/api")
+fun String.asBuildConfigString(): String =
+    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "com.helpconnect.android"
@@ -18,7 +44,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
-        buildConfigField("String", "API_BASE_URL", "\"$escapedApiUrl\"")
+        buildConfigField("String", "EMULATOR_API_BASE_URL", emulatorApiUrl.asBuildConfigString())
+        buildConfigField("String", "LAN_API_BASE_URL", lanApiUrl.asBuildConfigString())
     }
 
     buildFeatures {
@@ -48,8 +75,13 @@ android {
 afterEvaluate {
     tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach {
         doFirst {
-            require(configuredApiUrl.startsWith("https://") && !configuredApiUrl.contains("example.invalid")) {
-                "Configure uma URL HTTPS por helpconnectApiBaseUrl ou HELPCONNECT_API_BASE_URL antes de gerar um build release."
+            require(
+                emulatorApiUrl.startsWith("https://") &&
+                    lanApiUrl.startsWith("https://") &&
+                    !emulatorApiUrl.contains("example.invalid") &&
+                    !lanApiUrl.contains("example.invalid")
+            ) {
+                "Configure URLs HTTPS por helpconnectEmulatorApiBaseUrl e helpconnectLanApiBaseUrl antes de gerar um build release."
             }
         }
     }

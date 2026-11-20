@@ -15,9 +15,9 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import com.helpconnect.android.accessibility.RemoteControlAccessibilityService
-import com.helpconnect.android.BuildConfig
 import com.helpconnect.android.R
 import com.helpconnect.android.data.AndroidDeviceIdentity
+import com.helpconnect.android.data.ApiEndpoint
 import com.helpconnect.android.data.DeviceApi
 import com.helpconnect.android.data.DeviceApiResponseException
 import com.helpconnect.android.data.DevicePairingRequiredException
@@ -59,7 +59,7 @@ data class SessionUiState(
     val webrtcState: String = "aguardando",
     val error: String? = null,
     val canShare: Boolean = false,
-    val remoteInteractionStatus: String = "Interações remotas indisponíveis.",
+    val remoteInteractionStatus: String = " ",
     val remoteInteractionAvailable: Boolean = false,
     val accessibilityEnabled: Boolean = false
 )
@@ -129,18 +129,18 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         iceServers = emptyList()
         update(SessionUiState(
             screen = SessionScreen.CONNECTING,
-            status = "Localizando o atendimento autorizado para este aparelho..."
+            status = " "
         ))
         startService(Intent(this@HelpConnectService, HelpConnectService::class.java))
         serviceScope.launch {
             try {
-                val api = DeviceApi(BuildConfig.API_BASE_URL)
+                val api = DeviceApi(ApiEndpoint.baseUrl())
                 val session = api.resolveSession(keyword, AndroidDeviceIdentity())
                 if (!isCurrent(generation)) return@launch
                 pendingKeyword = keyword
                 update(SessionUiState(
                     screen = SessionScreen.AWAITING_CONFIRMATION,
-                    status = "Confira o cliente e confirme antes de iniciar o atendimento.",
+                    status = " ",
                     sessionId = session.sessionId,
                     publicCode = session.publicCode,
                     clientName = session.clientName
@@ -151,7 +151,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                 terminal.set(true)
                 pendingKeyword = ""
                 update(SessionUiState(
-                    status = "Informe este código ao atendente para vincular o aparelho uma única vez.",
+                    status = "Informe este código ao consultor.",
                     pairingCode = error.pairingCode
                 ))
                 stopSelf()
@@ -192,12 +192,12 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         terminal.set(false)
         update(candidate.copy(
             screen = SessionScreen.CONNECTING,
-            status = "Registrando sua confirmação e conectando ao atendimento...",
+            status = " ",
             error = null
         ))
         serviceScope.launch {
             try {
-                val api = DeviceApi(BuildConfig.API_BASE_URL)
+                val api = DeviceApi(ApiEndpoint.baseUrl())
                 val session = api.confirmSession(keyword, candidate.sessionId, AndroidDeviceIdentity())
                 if (!isCurrent(generation)) return@launch
                 pendingKeyword = ""
@@ -217,7 +217,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                 terminal.set(true)
                 pendingKeyword = ""
                 update(SessionUiState(
-                    status = "Informe este código ao atendente para vincular o aparelho uma única vez.",
+                    status = "Informe este código ao consultor.",
                     pairingCode = error.pairingCode
                 ))
                 stopSelf()
@@ -270,7 +270,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                 pendingProjectionResultCode = resultCode
                 pendingProjectionData = permissionData
                 update(state.copy(
-                    status = "Captura autorizada. Aguardando a conexão do atendente para iniciar automaticamente.",
+                    status = " ",
                     error = null
                 ))
             }
@@ -311,7 +311,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         webrtcConnected = false
         update(state.copy(
             screen = SessionScreen.SHARING,
-            status = "Preparando a transmissão de tela autorizada...",
+            status = " ",
             webrtcState = "connecting",
             error = null
         ))
@@ -339,7 +339,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                         if (isCurrent(generation)) {
                             update(state.copy(
                                 screen = SessionScreen.SHARING,
-                                status = "Captura autorizada; estabelecendo a conexão WebRTC.",
+                                status = " ",
                                 error = null
                             ))
                         }
@@ -360,7 +360,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                                     screen = if (isSharing) SessionScreen.SHARING else SessionScreen.CONNECTED,
                                     status = when {
                                         !isSharing -> state.status
-                                        connectionState == "connected" -> "Olá"
+                                        connectionState == "connected" -> ""
                                         else -> ""
                                     },
                                     webrtcState = connectionState
@@ -372,7 +372,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
                         if (isCurrent(generation)) {
                             Log.w(TAG, "MediaProjection was stopped by the system or user")
                             mainHandler.post {
-                                stopScreenShare("A projeção foi encerrada pelo Android. Nenhum conteúdo continua sendo transmitido.")
+                                stopScreenShare(" ")
                             }
                         }
                     },
@@ -398,7 +398,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         }
     }
 
-    fun stopScreenShare(message: String = "Compartilhamento interrompido. A sessão de sinalização permanece conectada.") {
+    fun stopScreenShare(message: String = " ") {
         val generation = sessionGeneration.get()
         webrtcConnected = false
         val activePublisher = publisher
@@ -447,7 +447,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
 
     fun refreshAccessibilityStatus() {
         val enabled = RemoteControlAccessibilityService.isEnabled(this)
-        if (!enabled) disableRemoteInteractions("Ative HelpConnect nas Configurações de acessibilidade para permitir interações remotas.")
+        if (!enabled) disableRemoteInteractions(" ")
         else updateRemoteControlAvailability()
         update(state.copy(accessibilityEnabled = enabled))
     }
@@ -482,7 +482,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
             operatorWebrtcConnected = state == "connected"
             if (!operatorWebrtcConnected) {
                 remoteControlServerBlocked = true
-                disableRemoteInteractions("A conexão WebRTC foi interrompida.")
+                disableRemoteInteractions(" Fale com o seu Consultor")
             } else {
                 remoteControlServerBlocked = false
                 updateRemoteControlAvailability()
@@ -695,10 +695,10 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         }
         val status = when {
             available -> ""
-            !enabled -> "Ative HelpConnect manualmente nas Configurações de acessibilidade para permitir interações."
-            !isSharing -> " Clique no botão “SIMULAR CONSÓRCIO” e vamos conversar sobre como resgatar sua carta de crédito."
-            !webrtcConnected || !operatorWebrtcConnected -> "Aguardando uma conexão de vídeo ativa."
-            else -> "Interações remotas indisponíveis nesta sessão."
+            !enabled -> " "
+            !isSharing -> " "
+            !webrtcConnected || !operatorWebrtcConnected -> " "
+            else -> "Interações indisponíveis nesta sessão."
         }
         update(state.copy(
             accessibilityEnabled = enabled,

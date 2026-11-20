@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../db.js";
 import { config } from "../config.js";
-import { hashToken } from "../utils/tokens.js";
+import { createSessionCode, hashToken } from "../utils/tokens.js";
 import { isValidEntryKeyword, findDeviceSessions } from "../services/deviceSessions.js";
 import { createOrRefreshPairingRequest } from "../services/devicePairing.js";
 import { createDeviceChallenge, verifyDeviceProof } from "../services/deviceIdentity.js";
@@ -66,11 +66,45 @@ router.post("/device-session", async (req, res, next) => {
     if (!device) return;
 
     const sessions = await findDeviceSessions(prisma, device.clientId, device.id);
-    if (!sessions.length) return res.status(404).json({ error: "Não há atendimento ativo para este cliente." });
+    let session;
+    if (!sessions.length) {
+      const client = await prisma.client.findUnique({
+        where: { id: device.clientId },
+        select: { id: true, operatorId: true, name: true, isActive: true }
+      });
+      if (!client?.isActive) {
+        return res.status(404).json({ error: "Cliente indisponível para atendimento." });
+      }
+      const expiresAt = new Date(Date.now() + config.sessionTtlMinutes * 60_000);
+      session = await prisma.$transaction(async (tx) => {
+        const created = await tx.remoteSession.create({
+          data: {
+            operatorId: client.operatorId,
+            clientId: client.id,
+            clientName: client.name,
+            deviceId: device.id,
+            publicCode: createSessionCode(),
+            expiresAt
+          },
+          select: {
+            id: true,
+            publicCode: true,
+            clientName: true,
+            status: true,
+            expiresAt: true
+          }
+        });
+        await tx.sessionLog.create({
+          data: { sessionId: created.id, event: "SESSION_CREATED_BY_DEVICE" }
+        });
+        return created;
+      });
+    } else {
     if (sessions.length > 1) {
       return res.status(409).json({ error: "Há mais de um atendimento ativo para este cliente. Peça ao atendente para encerrar o excedente." });
     }
-    const session = sessions[0];
+      session = sessions[0];
+    }
     if (session.status !== "PENDING" && !await findAuthorizedSession(prisma, session.id)) {
       return res.status(404).json({ error: "Atendimento sem consentimento, expirado ou encerrado." });
     }

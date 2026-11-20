@@ -74,6 +74,7 @@ router.get("/", requireOperator, async (req, res, next) => {
       take: 100,
       select: {
         id: true, publicCode: true, clientId: true, clientName: true,
+        deviceId: true,
         deviceModel: true, androidVersion: true, status: true, expiresAt: true,
         consentedAt: true, startedAt: true, endedAt: true, createdAt: true
       }

@@ -23,11 +23,11 @@
         </div>
         <nav class="main-nav" aria-label="Seções do painel">
           <button id="navDashboard" class="nav-link" type="button" aria-current="page"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="5" rx="2"/><rect x="13" y="10" width="8" height="11" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/></svg></span>Visão geral</button>
-          <button id="navSessions" class="nav-link" type="button"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="18" r="3"/></svg></span>Atendimentos</button>
+          <button id="navDevices" class="nav-link" type="button"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span>Aparelhos vinculados</button>
           <button id="navClients" class="nav-link" type="button"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 5.5a3 3 0 0 1 0 5.8M18 14a5 5 0 0 1 3 4.6v1"/></svg></span>Clientes</button>
           <button id="navSettings" class="nav-link" type="button"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.5.9l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.5-.9l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-1.8l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.5-.9l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.5.9l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 1.8Z"/></svg></span>Configurações</button>
         </nav>
-        <div class="sidebar-note"><span class="security-mark" aria-hidden="true">✓</span><p>Atendimentos seguros, sempre com autorização explícita.</p></div>
+        <div class="sidebar-note"><span class="security-mark" aria-hidden="true">✓</span><p>Controle autorizado dos aparelhos vinculados.</p></div>
       </aside>
       <div class="workspace">
         <header class="workspace-header">
@@ -37,31 +37,40 @@
         <div class="workspace-content">
           <section id="dashboardView">
             <div class="welcome-card">
-              <div><p class="eyebrow">CENTRAL DE OPERAÇÕES</p><h2>Seu suporte, em um só lugar.</h2><p>Acompanhe atendimentos autorizados e mantenha seus clientes por perto.</p></div>
+              <div><p class="eyebrow">CENTRAL DE OPERAÇÕES</p><h2>Seu suporte, em um só lugar.</h2><p>Controle os aparelhos vinculados aos seus clientes.</p></div>
               <span class="welcome-mark" aria-hidden="true"><svg viewBox="0 0 64 64"><path d="M32 6 53 14v16c0 14-9 24-21 29C20 54 11 44 11 30V14l21-8Z"/><path d="m22 31 7 7 14-15"/></svg></span>
             </div>
             <div class="section-heading"><div><h2>Resumo da operação</h2><p>Indicadores atualizados com os dados da sua conta.</p></div></div>
             <p id="dashboardMessage" class="message" aria-live="polite">Carregando indicadores...</p>
             <div class="metrics" aria-busy="true">
-              <article class="metric"><span>Atendimentos</span><strong id="metricTotal">—</strong></article>
-              <article class="metric"><span>Aguardando cliente</span><strong id="metricPending">—</strong></article>
-              <article class="metric"><span>Consentimento registrado</span><strong id="metricConsented">—</strong></article>
+              <article class="metric"><span>Aparelhos vinculados</span><strong id="metricDevices">—</strong></article>
+              <article class="metric"><span>Aparelhos ativos</span><strong id="metricActiveDevices">—</strong></article>
+              <article class="metric"><span>Controle disponível</span><strong id="metricControlAvailable">—</strong></article>
               <article class="metric"><span>Clientes cadastrados</span><strong id="metricClients">—</strong></article>
             </div>
             <div class="section-heading"><div><h2>Acesso rápido</h2><p>Continue de onde parou.</p></div></div>
             <div class="quick-links">
-              <button id="dashboardSessions" class="quick-link" type="button"><span class="quick-link-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/><circle cx="18" cy="18" r="3"/></svg></span><span><strong>Ver atendimentos</strong><small>Acompanhe status e conexões</small></span><span class="quick-arrow" aria-hidden="true">→</span></button>
+              <button id="dashboardDevices" class="quick-link" type="button"><span class="quick-link-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg></span><span><strong>Ver aparelhos vinculados</strong><small>Controle os celulares autorizados</small></span><span class="quick-arrow" aria-hidden="true">→</span></button>
               <button id="dashboardClients" class="quick-link" type="button"><span class="quick-link-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 5.5a3 3 0 0 1 0 5.8M18 14a5 5 0 0 1 3 4.6v1"/></svg></span><span><strong>Gerenciar clientes</strong><small>Consulte e atualize cadastros</small></span><span class="quick-arrow" aria-hidden="true">→</span></button>
             </div>
           </section>
-          <section id="sessionsView" class="hidden">
-            <div class="section-heading"><div><h2>Atendimentos recentes</h2><p>Crie um atendimento para um cliente com aparelho Android pareado.</p></div><button id="newSession" type="button">+ Novo atendimento</button></div>
-            <div id="newSessionPanel" class="panel hidden">
-              <h2>Novo atendimento</h2>
-              <label>Cliente<select id="sessionClient" required><option value="">Selecione um cliente</option></select></label>
-              <button id="createSession" type="button">Criar atendimento</button><p id="sessionMessage" class="message" aria-live="polite"></p>
+          <section id="devicesView" class="hidden">
+            <div class="section-heading"><div><h2>Aparelhos vinculados</h2><p>Selecione um aparelho autorizado para controlar a tela do cliente.</p></div></div>
+            <div class="panel"><div class="tableHead"><h2>Celulares disponíveis</h2><button id="refreshDevices" class="ghost" type="button">Atualizar</button></div><div id="linkedDevices" class="sessions" aria-live="polite"><p>Carregando...</p></div></div>
+            <div class="panel">
+              <h2>Tela remota</h2>
+              <p>O cliente precisa confirmar o atendimento, autorizar a captura de tela no Android e ativar a acessibilidade para liberar os comandos.</p>
+              <video id="remoteScreen" autoplay playsinline muted hidden></video>
+              <button type="button" class="ghost hidden" id="disconnectDeviceControl">Desconectar controle</button>
+              <div id="deviceControlActions" class="actions hidden">
+                <button type="button" class="ghost" data-device-action="BACK">Voltar</button>
+                <button type="button" class="ghost" data-device-action="HOME">Início</button>
+                <button type="button" class="ghost" data-device-action="RECENTS">Recentes</button>
+                <input id="deviceControlText" type="text" maxlength="512" placeholder="Texto para o campo selecionado" aria-label="Texto para digitar no Android">
+                <button type="button" id="sendDeviceControlText">Enviar texto</button>
+              </div>
+              <p id="deviceControlStatus" class="message">Selecione um aparelho conectado para iniciar o controle.</p>
             </div>
-            <div class="panel"><div class="tableHead"><h2>Histórico</h2><button id="refresh" class="ghost" type="button">Atualizar</button></div><div id="sessions" class="sessions" aria-live="polite"><p>Carregando...</p></div></div>
           </section>
           <section id="clientsView" class="hidden">
             <div class="section-heading"><div><h2>Clientes</h2><p>Os dados cadastrados ficam visíveis somente para este atendente.</p></div></div>

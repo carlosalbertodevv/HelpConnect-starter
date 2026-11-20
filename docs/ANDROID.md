@@ -11,16 +11,18 @@ O app usa Kotlin, Kotlin DSL, AndroidX, Material Components, OkHttp 4.12.0, Coro
 
 ## Configuração da API
 
-O build `debug` usa `http://10.0.2.2:3001/api` por padrão. O endereço `10.0.2.2` permite ao Android Emulator alcançar o Windows host; não use `localhost` ou `127.0.0.1` no app. A URL é centralizada no `BuildConfig.API_BASE_URL` e o WebSocket deriva `/ws` da mesma origem.
+O build `debug` seleciona a API automaticamente: emuladores Android usam `http://10.0.2.2:3001/api`; celulares físicos usam o IP LAN do computador que compilou o APK (detectado no build). O emulador usa `10.0.2.2` para alcançar o host; celulares físicos devem estar na mesma rede Wi-Fi do computador. O backend escuta em `0.0.0.0:3001` por padrão. Libere a porta TCP 3001 no Firewall do Windows para a rede privada, se solicitado. O app e o WebSocket derivam a conexão da URL selecionada.
 
-Se necessário, defina outra URL base com o sufixo `/api` por uma propriedade Gradle:
+Se necessário, configure os endereços separadamente (ambos devem terminar em `/api`):
 
 ```powershell
 cd android
-.\gradlew.bat assembleDebug -PhelpconnectApiBaseUrl="http://10.0.2.2:3001/api"
+.\gradlew.bat assembleDebug `
+  -PhelpconnectEmulatorApiBaseUrl="http://10.0.2.2:3001/api" `
+  -PhelpconnectLanApiBaseUrl="http://192.168.2.12:3001/api"
 ```
 
-Também é possível usar a variável `HELPCONNECT_API_BASE_URL`; propriedade Gradle tem precedência. Em aparelho físico, substitua por endereço LAN acessível ou domínio HTTPS. A API e o WebSocket precisam estar alcançáveis pela rede do dispositivo.
+As propriedades Gradle também podem ser fornecidas pelas variáveis `HELPCONNECT_EMULATOR_API_BASE_URL` e `HELPCONNECT_LAN_API_BASE_URL`. Para compatibilidade, `helpconnectApiBaseUrl`/`HELPCONNECT_API_BASE_URL` define o mesmo endereço para ambos. O IP LAN pode mudar quando o computador troca de rede; gere novamente o APK com o IP correto. A API e o WebSocket precisam estar alcançáveis pela rede do dispositivo.
 
 Não coloque tokens, senhas ou segredos nessa propriedade. O endpoint deve terminar em `/api`.
 
@@ -39,7 +41,7 @@ cd android
 .\gradlew.bat assembleDebug installDebug
 ```
 
-O backend escuta em `0.0.0.0:3001` por padrão. O app Android usa `10.0.2.2` para acessar a API no emulador; não precisa abrir link nem configurar `PUBLIC_APP_URL`. O frontend web ainda pode usar a página legada de consentimento em `client.html`, mas esse fluxo não é usado pelo app Android. Abra `android/` no Android Studio para sincronizar Gradle, executar testes e instalar em emulador/dispositivo. Não é necessário configurar Supabase Auth no app: a identidade é uma chave gerada no Android Keystore, e cada requisição é autenticada por desafio assinado.
+O backend escuta em `0.0.0.0:3001` por padrão; mantenha-o em execução no computador durante os testes. O app escolhe `10.0.2.2` no emulador ou o IP LAN no celular físico, sem precisar abrir link nem configurar `PUBLIC_APP_URL`. O frontend web ainda pode usar a página legada de consentimento em `client.html`, mas esse fluxo não é usado pelo app Android. Abra `android/` no Android Studio para sincronizar Gradle, executar testes e instalar em emulador/dispositivo. Não é necessário configurar Supabase Auth no app: a identidade é uma chave gerada no Android Keystore, e cada requisição é autenticada por desafio assinado.
 
 ## Uso
 

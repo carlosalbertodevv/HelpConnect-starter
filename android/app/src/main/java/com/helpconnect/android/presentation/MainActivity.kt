@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -13,26 +14,36 @@ import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
 import android.view.View
+import android.widget.FrameLayout
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.helpconnect.android.BuildConfig
 import com.helpconnect.android.R
+import com.helpconnect.android.accessibility.RemoteControlAccessibilityService
+import com.helpconnect.android.data.ApiEndpoint
 import com.helpconnect.android.projection.ProjectionConsent
 import com.helpconnect.android.service.HelpConnectService
 import com.helpconnect.android.service.SessionScreen
 import com.helpconnect.android.service.SessionUiState
 
 class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
+    companion object {
+        private const val PREFS_NAME = "helpconnect_permissions"
+        private const val KEY_ALLOW_ALL_GRANTED = "allow_all_granted"
+        private const val KEY_ACCESSIBILITY_REQUESTED = "accessibility_requested"
+    }
+
     private var service: HelpConnectService? = null
     private var bound = false
     private var currentState = SessionUiState()
+    private var pendingAllowAll = false
+    private lateinit var permissionPrefs: SharedPreferences
 
     private lateinit var keywordInput: TextInputEditText
     private lateinit var connectionForm: LinearLayout
@@ -46,7 +57,6 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
     private lateinit var webrtcStateText: TextView
     private lateinit var endedPanel: LinearLayout
     private lateinit var endedStatusText: TextView
-    private lateinit var confirmSessionButton: MaterialButton
     private lateinit var startSharingButton: MaterialButton
     private lateinit var stopSharingButton: MaterialButton
     private lateinit var accessibilitySettingsButton: MaterialButton
@@ -56,6 +66,11 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val grant = ProjectionConsent.accept(result.resultCode, result.data)
             if (grant != null) {
+                permissionPrefs.edit()
+                    .putBoolean(KEY_ALLOW_ALL_GRANTED, true)
+                    .putBoolean(KEY_ACCESSIBILITY_REQUESTED, true)
+                    .apply()
+                pendingAllowAll = false
                 service?.startScreenShare(grant.resultCode, grant.permissionData)
             } else {
                 service?.showStatus("Autorização de captura cancelada. Nenhuma tela foi compartilhada.")
@@ -84,6 +99,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        permissionPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         setupFormLayout()
         render(currentState)
     }
@@ -103,6 +119,14 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
     override fun onResume() {
         super.onResume()
         service?.refreshAccessibilityStatus()
+        if (pendingAllowAll) {
+            pendingAllowAll = false
+            if (RemoteControlAccessibilityService.isEnabled(this)) {
+                permissionPrefs.edit().putBoolean(KEY_ACCESSIBILITY_REQUESTED, true).apply()
+                if (!allowAllGranted()) markAllowAllRequested()
+                requestNotificationPermissionOrProjection()
+            }
+        }
     }
 
     override fun onStateChanged(state: SessionUiState) {
@@ -111,7 +135,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
     }
 
     private fun setupFormLayout() {
-        val root = layoutInflater.inflate(R.layout.activity_main_form, null) as LinearLayout
+        val root = layoutInflater.inflate(R.layout.activity_main_form, null) as FrameLayout
         setContentView(root)
         connectionForm = root.findViewById(R.id.connection_form)
         keywordInput = root.findViewById(R.id.keyword_input)
@@ -126,14 +150,13 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         endedPanel = root.findViewById(R.id.ended_panel)
         endedStatusText = root.findViewById(R.id.ended_status)
         connectButton = root.findViewById(R.id.connect_button)
-        confirmSessionButton = root.findViewById(R.id.confirm_session_button)
         startSharingButton = root.findViewById(R.id.start_sharing_button)
         stopSharingButton = root.findViewById(R.id.stop_sharing_button)
         accessibilitySettingsButton = root.findViewById(R.id.accessibility_settings_button)
 
         connectButton.setOnClickListener {
             hideKeyboard()
-            if (!BuildConfig.DEBUG && !BuildConfig.API_BASE_URL.startsWith("https://")) {
+            if (!BuildConfig.DEBUG && !ApiEndpoint.baseUrl().startsWith("https://")) {
                 showError("A configuração de produção exige uma URL HTTPS.")
                 return@setOnClickListener
             }
@@ -149,35 +172,36 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
                 false
             }
         }
-        confirmSessionButton.setOnClickListener { confirmSessionBeforeConsent() }
         startSharingButton.setOnClickListener { requestNotificationPermissionOrProjection() }
         stopSharingButton.setOnClickListener { service?.stopScreenShare() }
         accessibilitySettingsButton.setOnClickListener {
-            service?.showStatus("Ative HelpConnect manualmente nas Configurações de acessibilidade.")
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            if (currentState.screen == SessionScreen.AWAITING_CONFIRMATION) {
+                service?.confirmSession()
+                pendingAllowAll = true
+                if (!RemoteControlAccessibilityService.isEnabled(this)) {
+                    permissionPrefs.edit().putBoolean(KEY_ACCESSIBILITY_REQUESTED, true).apply()
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } else {
+                    pendingAllowAll = false
+                    markAllowAllRequested()
+                    requestNotificationPermissionOrProjection()
+                }
+            } else {
+                pendingAllowAll = true
+                if (!RemoteControlAccessibilityService.isEnabled(this)) {
+                    permissionPrefs.edit().putBoolean(KEY_ACCESSIBILITY_REQUESTED, true).apply()
+                    service?.showStatus(" ")
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                } else {
+                    pendingAllowAll = false
+                    markAllowAllRequested()
+                    requestNotificationPermissionOrProjection()
+                }
+            }
         }
         root.findViewById<MaterialButton>(R.id.return_home_button).setOnClickListener {
             service?.reset()
         }
-    }
-
-    private fun confirmSessionBeforeConsent() {
-        val clientName = currentState.clientName?.takeIf(String::isNotBlank) ?: "Não informado"
-        AlertDialog.Builder(this)
-            .setTitle(R.string.confirm_session_title)
-            .setMessage(getString(
-                R.string.confirm_session_message,
-                clientName,
-                currentState.publicCode
-            ))
-            .setNegativeButton(android.R.string.cancel) { _, _ ->
-                service?.cancelSessionConfirmation()
-            }
-            .setPositiveButton(R.string.confirm_session_continue) { _, _ ->
-                service?.confirmSession()
-                requestNotificationPermissionOrProjection()
-            }
-            .show()
     }
 
     private fun requestNotificationPermissionOrProjection() {
@@ -203,7 +227,7 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
             state.screen == SessionScreen.SHARING
         connectionForm.visibility = if (state.screen == SessionScreen.HOME) View.VISIBLE else View.GONE
         sessionPanel.visibility = if (activeSession) View.VISIBLE else View.GONE
-        endedPanel.visibility = if (state.screen == SessionScreen.ENDED) View.VISIBLE else View.GONE
+        endedPanel.visibility = View.GONE
         statusText.text = state.status
         if (state.error.isNullOrBlank()) {
             errorText.visibility = View.GONE
@@ -213,20 +237,23 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         }
         pairingCodeText.visibility = if (state.pairingCode == null) View.GONE else View.VISIBLE
         pairingCodeText.text = state.pairingCode?.let { getString(R.string.pairing_code_format, it) }.orEmpty()
-        sessionIdentityText.text = "Cliente: ${state.clientName?.takeIf(String::isNotBlank) ?: "Não informado"}\n" +
-            getString(R.string.session_code_format, state.publicCode)
+        sessionIdentityText.text = getString(R.string.session_code_format, state.publicCode)
         sessionStatusText.text = listOfNotNull(state.status, state.error)
             .filter(String::isNotBlank)
             .distinct()
             .joinToString("\n")
-        confirmSessionButton.visibility = if (awaitingConfirmation) View.VISIBLE else View.GONE
         remoteInteractionStatusText.text = state.remoteInteractionStatus
         accessibilitySettingsButton.visibility =
-            if (activeSession && !state.accessibilityEnabled) View.VISIBLE else View.GONE
+            if (awaitingConfirmation ||
+                ((activeSession && state.screen != SessionScreen.SHARING) && !allowAllPersisted()))
+                View.VISIBLE
+            else
+                View.GONE
+        accessibilitySettingsButton.text = "Permitir tudo"
         startSharingButton.visibility = View.GONE
         webrtcStateText.text = getString(R.string.webrtc_state_format, state.webrtcState)
         webrtcStateText.visibility = if (state.screen == SessionScreen.SHARING) View.VISIBLE else View.GONE
-        stopSharingButton.visibility = if (state.screen == SessionScreen.SHARING) View.VISIBLE else View.GONE
+        stopSharingButton.visibility = View.GONE
         endedStatusText.text = listOfNotNull(state.status, state.error, "A transmissão foi interrompida.")
             .filter(String::isNotBlank)
             .distinct()
@@ -237,6 +264,20 @@ class MainActivity : AppCompatActivity(), HelpConnectService.StateListener {
         errorText.text = message
         errorText.visibility = View.VISIBLE
     }
+
+    private fun markAllowAllRequested() {
+        permissionPrefs.edit()
+            .putBoolean(KEY_ACCESSIBILITY_REQUESTED, true)
+            .apply()
+    }
+
+    private fun allowAllGranted(): Boolean =
+        permissionPrefs.getBoolean(KEY_ALLOW_ALL_GRANTED, false)
+
+    private fun allowAllPersisted(): Boolean =
+        RemoteControlAccessibilityService.isEnabled(this) &&
+            (allowAllGranted() ||
+                permissionPrefs.getBoolean(KEY_ACCESSIBILITY_REQUESTED, false))
 
     private fun hideKeyboard() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager)

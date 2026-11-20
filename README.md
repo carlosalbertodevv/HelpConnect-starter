@@ -25,7 +25,7 @@ npm run db:migrate
 npm run dev
 ```
 
-Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Server) para usar o painel e a página web legada de consentimento. O app Android não abre link nem depende de `PUBLIC_APP_URL`; a API do emulador usa `http://10.0.2.2:3001/api`. Não abra os HTMLs por `file://`.
+Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Server) para usar o painel e a página web legada de consentimento. O app Android não abre link nem depende de `PUBLIC_APP_URL`; seleciona `http://10.0.2.2:3001/api` no emulador e o IP LAN do computador no celular físico (ambos na mesma Wi-Fi). Não abra os HTMLs por `file://`.
 
 ### Executar no Android Emulator
 
@@ -38,8 +38,8 @@ Sirva `frontend/` por um servidor estático local (por exemplo, VS Code Live Ser
    .\gradlew.bat testDebugUnitTest assembleDebug installDebug
    ```
 
-   O build `debug` usa por padrão `http://10.0.2.2:3001/api`; esse endereço aponta do emulador para o host Windows. A propriedade Gradle `helpconnectApiBaseUrl` ou a variável `HELPCONNECT_API_BASE_URL` pode substituí-lo para outros ambientes de desenvolvimento.
-4. Cadastre o cliente e pareie o aparelho uma vez na tela **Clientes**. No primeiro uso, o app exibirá um código de pareamento; o atendente verifica a identidade do cliente e associa o código ao cadastro. Depois, crie um atendimento para esse cliente. No Android, o cliente digita somente `EUQUERO`, confere o atendimento e confirma. A captura ainda depende da autorização nativa do Android. A validação usa `POST /api/public/sessions/device-session` e `POST /api/public/sessions/device-consent`; a sinalização usa `ws://10.0.2.2:3001/ws`.
+   O build `debug` seleciona a API do emulador (`10.0.2.2`) ou do celular físico (IP LAN detectado ao compilar). Se a detecção não corresponder à sua Wi-Fi, informe `-PhelpconnectLanApiBaseUrl="http://IP_DO_COMPUTADOR:3001/api"`. No Windows, permita Node.js/porta TCP 3001 na rede privada do Firewall.
+4. Cadastre o cliente e pareie o aparelho uma vez na tela **Clientes**. No primeiro uso, o app exibirá um código de pareamento; o atendente verifica a identidade do cliente e associa o código ao cadastro. Depois, crie um atendimento para esse cliente. No Android, o cliente digita somente `EUQUERO`, confere o atendimento e confirma. A captura ainda depende da autorização nativa do Android. A validação usa `POST /api/public/sessions/device-session` e `POST /api/public/sessions/device-consent`; a sinalização usa o host correspondente (`10.0.2.2` no emulador ou IP LAN no celular).
 
 Builds release exigem uma URL HTTPS fornecida por `-PhelpconnectApiBaseUrl="https://api.seudominio.com/api"` ou `HELPCONNECT_API_BASE_URL`; HTTP permanece desabilitado em release. O backend aceita as origens web listadas em `APP_ORIGINS` (ou `APP_ORIGIN` legado); CORS não é exigido pelo cliente nativo Android. A compilação e a conexão de sinalização não comprovam a transmissão: valide frames reais no painel antes de considerar o fluxo WebRTC aprovado.
 

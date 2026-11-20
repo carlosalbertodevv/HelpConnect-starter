@@ -8,6 +8,8 @@ const sb = configured ? window.supabase.createClient(supabaseUrl, supabaseAnonKe
 let accessToken = null;
 let editingClientId = null;
 const realtimeConnections = new Map();
+let cachedSessions = [];
+let deviceControlSessionId = null;
 
 const $ = (id) => document.getElementById(id);
 const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
@@ -31,7 +33,7 @@ async function api(path, options = {}) {
 function setView(view) {
   const views = {
     dashboard: ["dashboardView", "Visão geral", "PAINEL"],
-    sessions: ["sessionsView", "Atendimentos", "ATENDIMENTOS"],
+    devices: ["devicesView", "Aparelhos vinculados", "APARELHOS"],
     clients: ["clientsView", "Clientes", "CLIENTES"],
     settings: ["settingsView", "Configurações", "PREFERÊNCIAS"]
   };
@@ -122,13 +124,103 @@ sb?.auth.onAuthStateChange((_event, session) => {
   accessToken = session?.access_token ?? null;
 });
 
-$("newSession").onclick = () => show("newSessionPanel", $("newSessionPanel").classList.contains("hidden"));
 $("navDashboard").onclick = () => setView("dashboard");
-$("navSessions").onclick = () => setView("sessions");
+$("navDevices").onclick = () => setView("devices");
 $("navClients").onclick = () => setView("clients");
 $("navSettings").onclick = () => setView("settings");
-$("dashboardSessions").onclick = () => setView("sessions");
+$("dashboardDevices").onclick = () => setView("devices");
 $("dashboardClients").onclick = () => setView("clients");
+$("disconnectDeviceControl").addEventListener("click", () => {
+  if (deviceControlSessionId) {
+    realtimeConnections.get(deviceControlSessionId)?.stop();
+    realtimeConnections.delete(deviceControlSessionId);
+  }
+  deviceControlSessionId = null;
+  $("remoteScreen").srcObject = null;
+  $("remoteScreen").hidden = true;
+  $("remoteScreen").classList.remove("remote-control-active");
+  $("deviceControlActions").classList.add("hidden");
+  $("disconnectDeviceControl").classList.add("hidden");
+  $("deviceControlActions").querySelectorAll("button, input").forEach((control) => {
+    control.disabled = true;
+  });
+  message("deviceControlStatus", "Controle remoto desconectado.");
+});
+$("deviceControlActions").querySelectorAll("[data-device-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    sendDeviceControlCommand({ kind: "global", action: button.dataset.deviceAction });
+  });
+});
+$("sendDeviceControlText").addEventListener("click", () => {
+  const input = $("deviceControlText");
+  if (!input.value) return;
+  if (sendDeviceControlCommand({ kind: "type_text", text: input.value })) input.value = "";
+});
+$("deviceControlText").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") $("sendDeviceControlText").click();
+});
+$("remoteScreen").addEventListener("pointerdown", (event) => {
+  const video = $("remoteScreen");
+  if (!event.isPrimary || !video.classList.contains("remote-control-active")) return;
+  const point = remoteVideoPoint(event, video);
+  if (!point) return;
+  event.preventDefault();
+  video.setPointerCapture(event.pointerId);
+  video._activeRemotePointer = {
+    ...point,
+    startX: point.x,
+    startY: point.y,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    moved: false,
+    longPressSent: false,
+    timer: setTimeout(() => {
+      const pointer = video._activeRemotePointer;
+      if (!pointer || pointer.moved) return;
+      pointer.longPressSent = true;
+      sendDeviceControlCommand({ kind: "long_press", x: pointer.x, y: pointer.y, durationMs: 700 });
+    }, 700)
+  };
+});
+$("remoteScreen").addEventListener("pointermove", (event) => {
+  const video = $("remoteScreen");
+  const pointer = video._activeRemotePointer;
+  if (!pointer || !video.hasPointerCapture(event.pointerId)) return;
+  const point = remoteVideoPoint(event, video);
+  if (point) {
+    pointer.x = point.x;
+    pointer.y = point.y;
+  }
+  if (Math.hypot(event.clientX - pointer.startClientX, event.clientY - pointer.startClientY) > 10) {
+    pointer.moved = true;
+    clearTimeout(pointer.timer);
+  }
+});
+$("remoteScreen").addEventListener("pointerup", (event) => {
+  const video = $("remoteScreen");
+  if (!video.classList.contains("remote-control-active")) return;
+  const pointer = video._activeRemotePointer;
+  video._activeRemotePointer = null;
+  if (!pointer) return;
+  clearTimeout(pointer.timer);
+  if (pointer.longPressSent) return;
+  const end = remoteVideoPoint(event, video) || { x: pointer.x, y: pointer.y };
+  sendDeviceControlCommand(pointer.moved
+    ? {
+        kind: "drag",
+        fromX: pointer.startX,
+        fromY: pointer.startY,
+        toX: end.x,
+        toY: end.y,
+        durationMs: 300
+      }
+    : { kind: "tap", x: pointer.startX, y: pointer.startY });
+});
+$("remoteScreen").addEventListener("pointercancel", () => {
+  const video = $("remoteScreen");
+  clearTimeout(video._activeRemotePointer?.timer);
+  video._activeRemotePointer = null;
+});
 $("themeSelect").onchange = () => {
   applyTheme($("themeSelect").value);
   try {
@@ -138,37 +230,49 @@ $("themeSelect").onchange = () => {
     message("settingsMessage", "Tema aplicado, mas não foi possível salvar a preferência neste navegador.");
   }
 };
-$("refresh").onclick = async () => {
-  await Promise.all([loadSessions(), loadDashboard()]);
-};
 
-$("createSession").onclick = async () => {
-  const clientId = $("sessionClient").value;
-  if (!clientId) {
-    message("sessionMessage", "Selecione o cliente cadastrado para localizar o aparelho pareado.");
-    return;
+function sendDeviceControlCommand(action) {
+  const connection = realtimeConnections.get(deviceControlSessionId);
+  if (!connection?.sendRemoteControlCommand(action)) {
+    message("deviceControlStatus", "Comando não enviado. Aguarde a conexão e a autorização do dispositivo.");
+    return false;
   }
-  $("createSession").disabled = true;
-  try {
-    const data = await api("/sessions", { method: "POST", body: JSON.stringify({ clientId }) });
-    message("sessionMessage", `Atendimento ${data.session.publicCode} criado. O cliente pode abrir o app e digitar EUQUERO.`);
-    await Promise.all([loadSessions(), loadDashboard()]);
-  } catch (error) {
-    message("sessionMessage", error.message);
-  } finally {
-    $("createSession").disabled = false;
-  }
+  return true;
+}
+
+function remoteVideoPoint(event, video) {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  const rect = video.getBoundingClientRect();
+  const scale = Math.min(rect.width / video.videoWidth, rect.height / video.videoHeight);
+  const width = video.videoWidth * scale;
+  const height = video.videoHeight * scale;
+  const x = (event.clientX - (rect.left + (rect.width - width) / 2)) / width;
+  const y = (event.clientY - (rect.top + (rect.height - height) / 2)) / height;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x: Math.round(x * 10_000), y: Math.round(y * 10_000) };
+}
+$("refreshDevices").onclick = async () => {
+  await Promise.all([loadSessions(), loadDevices(), loadDashboard()]);
 };
+setInterval(() => {
+  if (accessToken && !$("devicesView").classList.contains("hidden")) {
+    void loadDevices();
+  }
+}, 10_000);
 
 async function loadDashboard() {
   const metricsContainer = document.querySelector(".metrics");
   metricsContainer.setAttribute("aria-busy", "true");
   message("dashboardMessage", "Carregando indicadores...");
   try {
-    const { metrics } = await api("/sessions/dashboard");
-    $("metricTotal").textContent = metrics.total;
-    $("metricPending").textContent = metrics.pending;
-    $("metricConsented").textContent = metrics.consented;
+    const [{ devices }, { metrics }] = await Promise.all([api("/devices"), api("/sessions/dashboard")]);
+    const activeDevices = devices.filter((device) => device.isActive).length;
+    const controllable = cachedSessions.filter((session) =>
+      ["CONSENTED", "CONNECTING", "ACTIVE"].includes(session.status)
+    ).length;
+    $("metricDevices").textContent = devices.length;
+    $("metricActiveDevices").textContent = activeDevices;
+    $("metricControlAvailable").textContent = controllable;
     $("metricClients").textContent = metrics.clients;
     message("dashboardMessage", "");
   } catch (error) {
@@ -181,7 +285,9 @@ async function loadDashboard() {
 async function loadSessions() {
   try {
     const { sessions } = await api("/sessions");
+    cachedSessions = sessions;
     const root = $("sessions");
+    if (!root) return;
     root.replaceChildren();
     if (!sessions.length) {
       root.textContent = "Nenhum atendimento criado.";
@@ -510,18 +616,14 @@ async function loadClients() {
   try {
     const { clients } = await api("/clients");
     const root = $("clients");
-    const sessionSelect = $("sessionClient");
     const pairingSelect = $("pairingClient");
-    const selectedSessionClient = sessionSelect.value;
     const selectedPairingClient = pairingSelect.value;
-    sessionSelect.replaceChildren(new Option("Selecione um cliente", ""));
     pairingSelect.replaceChildren(new Option("Selecione um cliente", ""));
     root.replaceChildren();
     if (!clients.length) root.textContent = "Nenhum cliente cadastrado.";
 
     for (const client of clients) {
       if (client.isActive) {
-        sessionSelect.add(new Option(client.name, client.id));
         pairingSelect.add(new Option(client.name, client.id));
       }
       const row = document.createElement("div");
@@ -576,9 +678,6 @@ async function loadClients() {
       row.append(actions);
       root.append(row);
     }
-    if ([...sessionSelect.options].some((option) => option.value === selectedSessionClient)) {
-      sessionSelect.value = selectedSessionClient;
-    }
     if ([...pairingSelect.options].some((option) => option.value === selectedPairingClient)) {
       pairingSelect.value = selectedPairingClient;
     }
@@ -589,46 +688,136 @@ async function loadClients() {
 
 async function loadDevices() {
   try {
-    const { devices } = await api("/devices");
-    const root = $("devices");
-    root.replaceChildren();
+    const [{ devices }, { sessions }] = await Promise.all([api("/devices"), api("/sessions")]);
+    cachedSessions = sessions;
+    const roots = [$("devices"), $("linkedDevices")].filter(Boolean);
+    for (const root of roots) root.replaceChildren();
     if (!devices.length) {
-      root.textContent = "Nenhum aparelho pareado.";
+      for (const root of roots) root.textContent = "Nenhum aparelho pareado.";
       return;
     }
     for (const device of devices) {
-      const row = document.createElement("div");
-      row.className = "session";
-      const info = document.createElement("div");
-      const title = document.createElement("strong");
-      title.textContent = device.clientName;
-      const detail = document.createElement("small");
-      const pairedAt = device.pairedAt
-        ? new Date(device.pairedAt).toLocaleString("pt-BR")
-        : "Data indisponível";
-      detail.textContent = `${device.model || "Aparelho Android"} · Pareado em ${pairedAt} · ${device.isActive ? "Ativo" : "Revogado"}`;
-      info.append(title, detail);
-      row.append(info);
-      if (device.isActive) {
-        const revoke = document.createElement("button");
-        revoke.type = "button";
-        revoke.className = "ghost";
-        revoke.textContent = "Revogar aparelho";
-        revoke.onclick = async () => {
-          if (!window.confirm(`Revogar o aparelho pareado ao cliente ${device.clientName}?`)) return;
-          revoke.disabled = true;
-          try {
-            await api(`/devices/${device.id}/revoke`, { method: "POST" });
-            await loadDevices();
-            message("devicePairingMessage", "Aparelho revogado; atendimentos ativos nesse aparelho foram encerrados.");
-          } catch (error) {
-            message("devicePairingMessage", error.message);
-            revoke.disabled = false;
+      for (const root of roots) {
+        const row = document.createElement("div");
+        row.className = "session";
+        const info = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = device.clientName;
+        const detail = document.createElement("small");
+        const pairedAt = device.pairedAt
+          ? new Date(device.pairedAt).toLocaleString("pt-BR")
+          : "Data indisponível";
+        detail.textContent = `${device.model || "Aparelho Android"} · Pareado em ${pairedAt} · ${device.isActive ? "Ativo" : "Revogado"}`;
+        info.append(title, detail);
+        row.append(info);
+        if (device.isActive) {
+          const activeSession = sessions.find((session) =>
+            session.deviceId === device.id &&
+            ["CONSENTED", "CONNECTING", "ACTIVE"].includes(session.status)
+          );
+          if (root.id === "linkedDevices") {
+            const control = document.createElement("button");
+            control.type = "button";
+            control.textContent = activeSession ? "Controle remoto" : "Aguardando conexão";
+            control.disabled = !activeSession;
+            control.onclick = async () => {
+              if (!activeSession) return;
+              setView("devices");
+              if (realtimeConnections.has(activeSession.id)) {
+                deviceControlSessionId = activeSession.id;
+                message("deviceControlStatus", "Este aparelho já está conectado.");
+                return;
+              }
+              for (const [sessionId, existingConnection] of realtimeConnections) {
+                existingConnection.stop();
+                realtimeConnections.delete(sessionId);
+              }
+              deviceControlSessionId = activeSession.id;
+              $("remoteScreen").srcObject = null;
+              $("remoteScreen").hidden = true;
+              $("deviceControlActions").classList.add("hidden");
+              $("deviceControlActions").querySelectorAll("button, input").forEach((input) => {
+                input.disabled = true;
+              });
+              $("disconnectDeviceControl").classList.remove("hidden");
+              message("deviceControlStatus", "Conectando ao aparelho...");
+              try {
+                const connection = window.HelpConnectRealtime.connect({
+                  sessionId: activeSession.id,
+                  apiUrl,
+                  getAccessToken: () => accessToken,
+                  getIceServers: async (id) => api(`/sessions/${id}/ice-servers`).then((response) => response),
+                  onState: (transport, value) => {
+                    if (transport === "websocket") {
+                      message("deviceControlStatus", `Sinalização: ${translateRealtimeState(value)}.`);
+                      if (value === "closed") {
+                        realtimeConnections.delete(activeSession.id);
+                        if (deviceControlSessionId === activeSession.id) {
+                          deviceControlSessionId = null;
+                          $("disconnectDeviceControl").classList.add("hidden");
+                          $("deviceControlActions").classList.add("hidden");
+                        }
+                      }
+                    }
+                  },
+                  onStream: (stream) => {
+                    const video = $("remoteScreen");
+                    video.srcObject = stream;
+                    video.hidden = !stream;
+                    video.classList.toggle("remote-control-active", false);
+                    message("deviceControlStatus", stream
+                      ? "Tela ativa. Controle remoto disponível após a confirmação no Android."
+                      : "Aguardando a tela do aparelho.");
+                  },
+                  onError: (text) => message("deviceControlStatus", text),
+                  onControlState: (value) => {
+                    const available = value === "available";
+                    const video = $("remoteScreen");
+                    video?.classList.toggle("remote-control-active", available);
+                    $("deviceControlActions").classList.toggle("hidden", !available);
+                    $("deviceControlActions").querySelectorAll("button, input").forEach((control) => {
+                      control.disabled = !available;
+                    });
+                    message("deviceControlStatus", available
+                      ? "Controle remoto ativo: toque, arraste ou envie texto."
+                      : "Aguardando autorização de acessibilidade e vídeo ativo.");
+                  },
+                  onControlResult: (result) => {
+                    message("deviceControlStatus", result.status === "succeeded"
+                      ? "Comando executado pelo aparelho."
+                      : `Comando não executado (${result.errorCode || "falha"}).`);
+                  }
+                });
+                realtimeConnections.set(activeSession.id, connection);
+              } catch (error) {
+                deviceControlSessionId = null;
+                $("disconnectDeviceControl").classList.add("hidden");
+                message("deviceControlStatus", error.message);
+              }
+            };
+            row.append(control);
+          } else {
+            const revoke = document.createElement("button");
+            revoke.type = "button";
+            revoke.className = "ghost";
+            revoke.textContent = "Revogar aparelho";
+            revoke.onclick = async () => {
+              if (!window.confirm(`Revogar o aparelho pareado ao cliente ${device.clientName}?`)) return;
+              revoke.disabled = true;
+              try {
+                await api(`/devices/${device.id}/revoke`, { method: "POST" });
+                await loadDevices();
+                message("devicePairingMessage", "Aparelho revogado; conexões ativas nesse aparelho foram encerradas.");
+              } catch (error) {
+                message("devicePairingMessage", error.message);
+                revoke.disabled = false;
+              }
+            };
+            row.append(revoke);
           }
-        };
-        row.append(revoke);
+        }
+        root.append(row);
       }
-      root.append(row);
     }
   } catch (error) {
     $("devices").textContent = error.message;
