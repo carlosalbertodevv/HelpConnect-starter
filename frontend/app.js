@@ -8,6 +8,8 @@ const sb = configured ? window.supabase.createClient(supabaseUrl, supabaseAnonKe
 let accessToken = null;
 let editingClientId = null;
 const realtimeConnections = new Map();
+const realtimeStreams = new Map();
+const realtimeControlStates = new Map();
 let cachedSessions = [];
 let deviceControlSessionId = null;
 
@@ -15,6 +17,29 @@ const $ = (id) => document.getElementById(id);
 const show = (id, visible) => $(id).classList.toggle("hidden", !visible);
 const message = (id, text) => { $(id).textContent = text; };
 const themeStorageKey = "helpconnect-theme";
+
+function showDeviceScreen(stream) {
+  const video = $("remoteScreen");
+  video.srcObject = stream;
+  video.hidden = !stream;
+  video.classList.toggle("remote-control-active", false);
+  if (stream) {
+    const playback = video.play();
+    if (playback && typeof playback.catch === "function") {
+      void playback.catch(() => {
+        message("deviceControlStatus", "Vídeo recebido, mas o navegador bloqueou a reprodução. Tente clicar na área do vídeo.");
+      });
+    }
+  }
+}
+
+function setDeviceControlAvailability(available) {
+  $("remoteScreen").classList.toggle("remote-control-active", available);
+  $("deviceControlActions").classList.toggle("hidden", !available);
+  $("deviceControlActions").querySelectorAll("button, input").forEach((control) => {
+    control.disabled = !available;
+  });
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${apiUrl}${path}`, {
@@ -134,6 +159,8 @@ $("disconnectDeviceControl").addEventListener("click", () => {
   if (deviceControlSessionId) {
     realtimeConnections.get(deviceControlSessionId)?.stop();
     realtimeConnections.delete(deviceControlSessionId);
+    realtimeStreams.delete(deviceControlSessionId);
+    realtimeControlStates.delete(deviceControlSessionId);
   }
   deviceControlSessionId = null;
   $("remoteScreen").srcObject = null;
@@ -254,8 +281,14 @@ function remoteVideoPoint(event, video) {
 $("refreshDevices").onclick = async () => {
   await Promise.all([loadSessions(), loadDevices(), loadDashboard()]);
 };
+$("refreshSessions").onclick = async () => {
+  await Promise.all([loadSessions(), loadDashboard()]);
+};
 setInterval(() => {
-  if (accessToken && !$("devicesView").classList.contains("hidden")) {
+  if (!accessToken) return;
+  if (!$("dashboardView").classList.contains("hidden") && realtimeConnections.size === 0) {
+    void Promise.all([loadSessions(), loadDashboard()]);
+  } else if (!$("devicesView").classList.contains("hidden")) {
     void loadDevices();
   }
 }, 10_000);
@@ -370,6 +403,8 @@ async function loadSessions() {
                 }
               },
               onStream: (stream) => {
+                if (stream) realtimeStreams.set(session.id, stream);
+                else realtimeStreams.delete(session.id);
                 const video = document.getElementById(`realtime-${session.id}-video`);
                 const placeholder = document.getElementById(`realtime-${session.id}-placeholder`);
                 const status = document.getElementById(`realtime-${session.id}-status`);
@@ -383,17 +418,27 @@ async function loadSessions() {
                   else placeholder.textContent = "Transmissão desconectada. As interações remotas estão desativadas.";
                 }
                 if (status) status.textContent = stream ? "Transmissão ativa" : "Aguardando dispositivo";
+                if (deviceControlSessionId === session.id) {
+                  showDeviceScreen(stream);
+                  if (stream) {
+                    message("deviceControlStatus", "Tela recebida na conexão já ativa.");
+                  } else {
+                    message("deviceControlStatus", "Aguardando a tela do aparelho.");
+                  }
+                }
               },
               onError: (text) => {
                 const error = document.getElementById(`realtime-${session.id}-error`);
                 if (error) error.textContent = text;
               },
               onControlState: (value) => {
+                const available = value === "available";
+                realtimeControlStates.set(session.id, available);
                 const status = document.getElementById(`realtime-${session.id}-control-status`);
                 const controls = document.getElementById(`realtime-${session.id}-control-actions`);
                 const video = document.getElementById(`realtime-${session.id}-video`);
-                const available = value === "available" && Boolean(video?.srcObject);
-                video?.classList.toggle("remote-control-active", available);
+                const canControl = available && Boolean(video?.srcObject);
+                video?.classList.toggle("remote-control-active", canControl);
                 if (status) {
                   status.textContent = ({
                     available: "Interações ativas: toques, gestos, navegação e texto em campos editáveis.",
@@ -402,10 +447,16 @@ async function loadSessions() {
                   })[value] || value;
                 }
                 if (controls) {
-                  controls.classList.toggle("hidden", !available);
+                  controls.classList.toggle("hidden", !canControl);
                   controls.querySelectorAll("button, input").forEach((control) => {
-                    control.disabled = !available;
+                    control.disabled = !canControl;
                   });
+                }
+                if (deviceControlSessionId === session.id) {
+                  setDeviceControlAvailability(canControl);
+                  message("deviceControlStatus", canControl
+                    ? "Vídeo recebido e interações autorizadas: toque, arraste ou envie texto."
+                    : "Aguardando disponibilidade do controle remoto.");
                 }
               },
               onControlResult: (result) => {
@@ -725,14 +776,48 @@ async function loadDevices() {
               setView("devices");
               if (realtimeConnections.has(activeSession.id)) {
                 deviceControlSessionId = activeSession.id;
-                message("deviceControlStatus", "Este aparelho já está conectado.");
+                $("disconnectDeviceControl").classList.remove("hidden");
+                const stream = realtimeStreams.get(activeSession.id) || null;
+                showDeviceScreen(stream);
+                const available = realtimeControlStates.get(activeSession.id) === true;
+                setDeviceControlAvailability(available);
+                message("deviceControlStatus", available
+                  ? "Vídeo recebido e interações autorizadas: toque, arraste ou envie texto."
+                  : stream
+                    ? "Tela recebida; aguardando disponibilidade das interações."
+                    : "Conexão já ativa. Aguardando a tela do aparelho.");
                 return;
               }
               for (const [sessionId, existingConnection] of realtimeConnections) {
                 existingConnection.stop();
                 realtimeConnections.delete(sessionId);
+                realtimeStreams.delete(sessionId);
+                realtimeControlStates.delete(sessionId);
               }
               deviceControlSessionId = activeSession.id;
+              realtimeStreams.delete(activeSession.id);
+              realtimeControlStates.set(activeSession.id, false);
+              const controlStates = {
+                websocket: "connecting",
+                device: "disconnected",
+                webrtc: "new"
+              };
+              let hasScreenStream = false;
+              const updateDeviceControlStatus = () => {
+                if (hasScreenStream) return;
+                const states = [
+                  `Sinalização: ${translateRealtimeState(controlStates.websocket)}`,
+                  `Android: ${translateRealtimeState(controlStates.device)}`,
+                  `WebRTC: ${translateRealtimeState(controlStates.webrtc)}`
+                ];
+                const captureHint = controlStates.device === "connected" &&
+                  ["new", "closed"].includes(controlStates.webrtc)
+                  ? "No Android, autorize a captura de tela para iniciar o vídeo."
+                  : controlStates.webrtc === "connected"
+                    ? "WebRTC conectado; aguardando vídeo do aparelho."
+                    : "";
+                message("deviceControlStatus", `${states.join(" · ")}${captureHint ? `. ${captureHint}` : "."}`);
+              };
               $("remoteScreen").srcObject = null;
               $("remoteScreen").hidden = true;
               $("deviceControlActions").classList.add("hidden");
@@ -748,8 +833,11 @@ async function loadDevices() {
                   getAccessToken: () => accessToken,
                   getIceServers: async (id) => api(`/sessions/${id}/ice-servers`).then((response) => response),
                   onState: (transport, value) => {
+                    if (transport in controlStates) {
+                      controlStates[transport] = value;
+                      updateDeviceControlStatus();
+                    }
                     if (transport === "websocket") {
-                      message("deviceControlStatus", `Sinalização: ${translateRealtimeState(value)}.`);
                       if (value === "closed") {
                         realtimeConnections.delete(activeSession.id);
                         if (deviceControlSessionId === activeSession.id) {
@@ -762,25 +850,34 @@ async function loadDevices() {
                   },
                   onStream: (stream) => {
                     const video = $("remoteScreen");
+                    hasScreenStream = Boolean(stream);
+                    if (stream) realtimeStreams.set(activeSession.id, stream);
+                    else realtimeStreams.delete(activeSession.id);
                     video.srcObject = stream;
                     video.hidden = !stream;
                     video.classList.toggle("remote-control-active", false);
-                    message("deviceControlStatus", stream
-                      ? "Tela ativa. Controle remoto disponível após a confirmação no Android."
-                      : "Aguardando a tela do aparelho.");
+                    if (stream) {
+                      message("deviceControlStatus", "Vídeo recebido; iniciando reprodução no painel.");
+                      const playback = video.play();
+                      if (playback && typeof playback.catch === "function") {
+                        void playback.catch(() => {
+                          message("deviceControlStatus", "Vídeo recebido, mas o navegador bloqueou a reprodução. Tente clicar na área do vídeo.");
+                        });
+                      }
+                    } else {
+                      updateDeviceControlStatus();
+                    }
                   },
                   onError: (text) => message("deviceControlStatus", text),
                   onControlState: (value) => {
                     const available = value === "available";
-                    const video = $("remoteScreen");
-                    video?.classList.toggle("remote-control-active", available);
-                    $("deviceControlActions").classList.toggle("hidden", !available);
-                    $("deviceControlActions").querySelectorAll("button, input").forEach((control) => {
-                      control.disabled = !available;
-                    });
-                    message("deviceControlStatus", available
-                      ? "Controle remoto ativo: toque, arraste ou envie texto."
-                      : "Aguardando autorização de acessibilidade e vídeo ativo.");
+                    realtimeControlStates.set(activeSession.id, available);
+                    setDeviceControlAvailability(available);
+                    if (available) {
+                      message("deviceControlStatus", "Vídeo recebido e interações autorizadas: toque, arraste ou envie texto.");
+                    } else {
+                      updateDeviceControlStatus();
+                    }
                   },
                   onControlResult: (result) => {
                     message("deviceControlStatus", result.status === "succeeded"

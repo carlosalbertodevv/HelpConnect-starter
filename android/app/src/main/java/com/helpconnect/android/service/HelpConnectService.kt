@@ -461,7 +461,7 @@ class HelpConnectService : Service(), DeviceSignalingClient.Listener {
         clearRemoteControlState()
         update(state.copy(
             screen = SessionScreen.CONNECTED,
-            status = "Sessão validada. Aguardando a conexão do atendente.",
+            status = " ",
             error = null
         ))
     }
