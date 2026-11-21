@@ -33,6 +33,33 @@ test("frontend config uses the deployed site's same-origin API", () => {
   }), "https://helpconnect-api-zxja.onrender.com/api");
 });
 
+test("development config permits the backend-served localhost and emulator panel origins", () => {
+  const script = `
+    import { config } from "./backend/src/config.js";
+    console.log(JSON.stringify(config.appOrigins));
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      NODE_ENV: "development",
+      DATABASE_URL: "postgresql://test:test@localhost:5432/test",
+      SUPABASE_URL: "https://project.supabase.co",
+      SUPABASE_ANON_KEY: "test-publishable-key",
+      APP_ORIGINS: "",
+      APP_ORIGIN: "",
+      RENDER_EXTERNAL_URL: "",
+      PUBLIC_APP_URL: ""
+    }
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const origins = JSON.parse(result.stdout);
+  assert.ok(origins.includes("http://localhost:3001"));
+  assert.ok(origins.includes("http://127.0.0.1:3001"));
+  assert.ok(origins.includes("http://10.0.2.2:3001"));
+});
+
 test("Render origin is included for the same-origin panel and WebSocket", () => {
   const script = `
     import { config } from "./backend/src/config.js";

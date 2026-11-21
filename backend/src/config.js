@@ -26,7 +26,15 @@ const configuredOrigins = process.env.APP_ORIGINS
   ? [...process.env.APP_ORIGINS.split(",").map((origin) => origin.trim()).filter(Boolean), ...renderOrigins]
   : isProduction
     ? [legacyAppOrigin, ...renderOrigins]
-    : [legacyAppOrigin, "http://localhost:5500", "http://127.0.0.1:5500", "http://10.0.2.2:5500"];
+    : [
+        legacyAppOrigin,
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "http://10.0.2.2:5500",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://10.0.2.2:3001"
+      ];
 const configuredPublicUrl = process.env.PUBLIC_APP_URL || (isProduction ? renderExternalUrl : null) || "http://localhost:5500";
 let appOrigins;
 let appOrigin;
